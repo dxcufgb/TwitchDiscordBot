@@ -141,7 +141,7 @@ class TwitchBot(discord.Client):
                         gameName = newStreamData.get('data')[0]['game_name']
                     if 'title' in newStreamData.get('data')[0]:
                         title = newStreamData.get('data')[0]['title']
-                    innerValues['LastStatus'] = newStreamData.get('data')[0]['type']
+                    innerValues['LastStatus'] = ''
                     for Stream in availableStreams:
                         if availableStreams[Stream]['URL'] == URL:
                             exists = True
@@ -250,7 +250,7 @@ class TwitchBot(discord.Client):
                         await channel.send('@here '+stream+' went live, streaming '+availableStreams[stream]['game_name']+'!\n\n'+availableStreams[stream]['title']+'\n\n'+ availableStreams[stream]['URL'])
                         self.writeAvailableStreamsToGuildJsonFile(guild.id)
                 else:
-                    if stream in guildStreams:
+                    if stream in guildStreams[guild.id]:
                         guildStreams[guild.id][stream]['LastStatus'] = ''
                         self.writeAvailableStreamsToGuildJsonFile(guild.id)
         
