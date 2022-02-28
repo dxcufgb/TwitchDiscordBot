@@ -256,7 +256,7 @@ class TwitchBot(discord.Client):
                     await channel.send(text)
         except:
             StreamsChannel = self.get_channel(int(outgoingChannelId))
-            await StreamsChannel.send('Something went wrong! use "!help" for help with commands!\nIf you were trying to modify or remove a stream or stream filters, make sure the stream key was correct!')
+            await StreamsChannel.send('Something went wrong!\n\nUse "!help" for help with commands!\n\nIf you were trying to modify or remove a stream or stream filters, make sure the stream key was correct!')
     
     async def checkForDailyUpdates(self):
         await self.wait_until_ready()
