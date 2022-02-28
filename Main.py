@@ -28,6 +28,9 @@ class TwitchBot(discord.Client):
         super().__init__(*args, **kwargs)
         
     async def on_ready(self):
+        logger.debug("================= DISCORD.PY VERISON =================")
+        logger.debug(discord.__version__)
+        logger.debug("======================================================")
         logger.debug("We have logged in as {0.user}".format(client))
         for guild in self.guilds:
             logger.debug("starting for guild: "+guild.name)
@@ -136,6 +139,7 @@ class TwitchBot(discord.Client):
                     gameName = ''
                     title = ''
                     URL = 'https://www.twitch.tv/'+newStream
+                    role = ''
                     newStreamData = await self.fetchStream(newStream)
                     if newStreamData.get('data'):
                         logger.debug(newStreamData.get('data')[0])
@@ -148,19 +152,35 @@ class TwitchBot(discord.Client):
                             if availableStreams[Stream]['URL'] == URL:
                                 exists = True
                                 existingName = Stream
+                                if 'Role' not in availableStreams[Stream]:
+                                    newRole = 'TW-'+Stream+'-Role'
+                                    availableStreams[Stream]['Role'] = newRole
+                                    role = newRole
+                                    with open('Streams.json', 'w+') as jf:
+                                        jf.write(json.dumps(availableStreams, indent=4, sort_keys=True))
+                                
                         if not exists:
                             guildStreams[incomingGuildId][newStream] = innerValues
+                            self.writeAvailableStreamsToGuildJsonFile(incomingGuildId)
                             innerValues['URL'] = URL
                             innerValues['game_name'] = gameName
                             innerValues['title'] = title
+                            innerValues['Role'] = 'TW-'+newStream+'-Role'
+                            role = 'TW-'+newStream+'-Role'
                             availableStreams[newStream] = innerValues
+                            guild = message.guild
+                            await guild.create_role(name=role)
+                            author = message.author
+                            role = discord.utils.get(message.guild.roles, name=role)
+                            await author.add_roles(role)
                             with open('Streams.json', 'w+') as jf:
                                 jf.write(json.dumps(availableStreams, indent=4, sort_keys=True))
                         else: 
                             guildStreams[incomingGuildId][existingName] = innerValues
+                            self.writeAvailableStreamsToGuildJsonFile(incomingGuildId)
                             
-                        self.writeAvailableStreamsToGuildJsonFile(incomingGuildId)
                         await channel.send('Stream "'+ newStream + '" added!')
+                        await channel.send('Role "'+availableStreams[newStream]['Role']+'" will be used for notifications!')
                         if newStreamData.get('data')[0]['description'] != '' and re.sub(r'.*(?:https?:\/\/)?discord(.*(gg|com|app\.com))\S?([A-Za-z0-9]+){7}', '', newStreamData.get('data')[0]['description'], re.DOTALL) != '':
                             await channel.send('Description: '+re.sub(r'.*(?:https?:\/\/)?discord(.*(gg|com|app\.com))\S?([A-Za-z0-9]+){7}', '', newStreamData.get('data')[0]['description']))
                     else:
@@ -206,14 +226,37 @@ class TwitchBot(discord.Client):
                 if message.content.startswith('!active-streams'):
                     text = ''
                     for Stream in guildStreams[incomingGuildId]:
-                        text += Stream+': '+availableStreams[Stream]['URL']+'\n'
+                        text += Stream+': '+availableStreams[Stream]['URL']+' Role: '+availableStreams[Stream]['Role']+'\n'
                     await channel.send(text)
                 
                 if message.content.startswith('!available-streams'):
                     text = ''
                     for Stream in availableStreams:
-                        text += Stream+': '+availableStreams[Stream]['URL']+'\n'
+                        text += Stream+': '+availableStreams[Stream]['URL']+' Role: '+availableStreams[Stream]['Role']+'\n'
                     await channel.send(text)
+                    
+                if message.content.startswith('!add-role'):
+                    roleName = message.content[message.content.find(' ')+1:]
+                    if roleName.startswith('TW-'):
+                        author = message.author
+                        try:
+                            role = discord.utils.get(message.guild.roles, name=roleName)
+                            await author.add_roles(role)
+                            await channel.send('User "'+author.display_name+'" added to role "'+roleName+'"!')
+                        except:
+                            await channel.send('Something went wrong, does the role exist?\n\nDid you spell it wrong')
+                    else:
+                        await channel.send('Command only works with twitch-stream subscription roles!\n\nthey always start with "TW-"')
+                       
+                if message.content.startswith('!remove-role'):
+                    roleName = message.content[message.content.find(' ')+1:]
+                    author = message.author
+                    try:
+                        role = discord.utils.get(message.guild.roles, name=roleName)
+                        await author.remove_roles(role)
+                        await channel.send('User "'+author.display_name+'" removed from role "'+roleName+'"!')
+                    except:
+                       await channel.send('Something went wrong, does the role exist?\n\nDid you spell it wrong')
 
                 if message.content.startswith('!help'):
                     text = '\n==============================ADMIN ONLY==============================\n'
@@ -247,6 +290,12 @@ class TwitchBot(discord.Client):
                     text += '\n'
                     text += '!active-filters\n'
                     text += 'List active filters on stream name and URL for this server\n'
+                    text += '\n'
+                    text += '!add-role [ROLE_NAME]\n'
+                    text += 'add yourself to a role on the server for subscription to certain streams!\n'
+                    text += '\n'
+                    text += '!remove-role [ROLE_NAME]\n'
+                    text += 'Remove yourself from a role on the server!\n'
                     text += '\n'
                     text += '!help\n'
                     text += 'shows this help section!\n'
@@ -287,9 +336,10 @@ class TwitchBot(discord.Client):
                 if availableStreams[stream]['LastStatus'] == 'live' and stream in guildStreams[guild.id]:
                     logger.debug('running task for guild: '+"% s" % guild.id)
                     channel = self.get_channel(int(os.getenv('STREAMS-CHANNEL-'+"% s" % guild.id).strip()))
-                    if guildStreams[guild.id][stream]['LastStatus'] != 'live' and any(filter in availableStreams[stream]['title'] for filter in guildStreams[guild.id][stream]["filter"]):
+                    if guildStreams[guild.id][stream]['LastStatus'] != 'live' and ("filter" not in guildStreams[guild.id][stream] or any(filter in availableStreams[stream]['title'] for filter in guildStreams[guild.id][stream]["filter"])):
                         guildStreams[guild.id][stream]['LastStatus'] = 'live'
-                        await channel.send('@here '+stream+' went live, streaming '+availableStreams[stream]['game_name']+'!\n\n'+availableStreams[stream]['title']+'\n\n'+ availableStreams[stream]['URL'])
+                        role = discord.utils.get(guild.roles, name=availableStreams[stream]['Role'])
+                        await channel.send(role.mention+' '+stream+' went live, streaming '+availableStreams[stream]['game_name']+'!\n\n'+availableStreams[stream]['title']+'\n\n'+ availableStreams[stream]['URL'])
                         self.writeAvailableStreamsToGuildJsonFile(guild.id)
                 else:
                     if stream in guildStreams[guild.id]:
