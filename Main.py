@@ -339,7 +339,11 @@ class TwitchBot(discord.Client):
                     if guildStreams[guild.id][stream]['LastStatus'] != 'live' and ("filter" not in guildStreams[guild.id][stream] or any(filter in availableStreams[stream]['title'] for filter in guildStreams[guild.id][stream]["filter"])):
                         guildStreams[guild.id][stream]['LastStatus'] = 'live'
                         role = discord.utils.get(guild.roles, name=availableStreams[stream]['Role'])
-                        await channel.send(role.mention+' '+stream+' went live, streaming '+availableStreams[stream]['game_name']+'!\n\n'+availableStreams[stream]['title']+'\n\n'+ availableStreams[stream]['URL'])
+                        try:
+                            await channel.send(role.mention+' '+stream+' went live, streaming '+availableStreams[stream]['game_name']+'!\n\n'+availableStreams[stream]['title']+'\n\n'+ availableStreams[stream]['URL'])
+                        except:
+                            await channel.send(availableStreams[stream]['Role']+' missing!')
+                            await channel.send('@here '+stream+' went live, streaming '+availableStreams[stream]['game_name']+'!\n\n'+availableStreams[stream]['title']+'\n\n'+ availableStreams[stream]['URL'])
                         self.writeAvailableStreamsToGuildJsonFile(guild.id)
                 else:
                     if stream in guildStreams[guild.id]:
