@@ -273,7 +273,7 @@ class TwitchBot(discord.Client):
                     text += 'The bot will start listening to other channels again!\n'
                     text += '\n'
                     text += '==============================EVERYONE==============================\n'
-                    text += '!add-stream --name [NAME] --url [URL TO RSS OR ATOM FEED]\n'
+                    text += '!add-stream --name [NAME]\n'
                     text += 'Add a Stream with assigned name and point to URL\n'
                     text += '\n'
                     text += '!active-streams\n'
