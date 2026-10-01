@@ -1,0 +1,290 @@
+"""Discord client, Twitch polling loop and start-up."""
+
+from __future__ import annotations
+
+import logging
+import sys
+import time
+from logging.handlers import RotatingFileHandler
+
+import discord
+from discord import app_commands
+from discord.ext import tasks
+from twitchAPI.helper import first
+from twitchAPI.object.api import TwitchUser
+from twitchAPI.twitch import Twitch
+
+from . import __version__
+from .config import Config, ConfigError, load_config
+from .notify import Announcement, LiveInfo, chunked, plan_announcements
+from .storage import StateStore, TrackedStream, migrate_legacy
+
+log = logging.getLogger("twitchbot")
+
+TWITCH_PURPLE = discord.Colour(0x9146FF)
+TWITCH_BATCH = 100  # max ids/logins per Helix request
+
+
+class TwitchNotifierBot(discord.Client):
+    def __init__(self, config: Config) -> None:
+        intents = discord.Intents.none()
+        intents.guilds = True  # guild/channel/role cache; no privileged intents needed
+        super().__init__(intents=intents, allowed_mentions=discord.AllowedMentions.none())
+        self.config = config
+        self.tree = app_commands.CommandTree(self)
+        self.store = StateStore(config.data_dir / "state.json")
+        self.twitch: Twitch | None = None
+        self.exit_code = 0
+        self._warned_unknown: set[str] = set()
+        self.poll_streams.change_interval(seconds=config.poll_interval)
+
+    # ---- lifecycle ----------------------------------------------------
+    async def setup_hook(self) -> None:
+        self._load_state()
+        self.twitch = await Twitch(self.config.twitch_app_id, self.config.twitch_app_secret)
+
+        from .commands import register_commands
+
+        register_commands(self)
+        await self._sync_commands()
+        self.poll_streams.start()
+
+    async def _sync_commands(self) -> None:
+        try:
+            if self.config.dev_guild_id:
+                guild = discord.Object(id=self.config.dev_guild_id)
+                self.tree.copy_global_to(guild=guild)
+                synced = await self.tree.sync(guild=guild)
+            else:
+                synced = await self.tree.sync()
+            log.info("Synced %d slash command(s)", len(synced))
+        except discord.HTTPException:
+            log.exception("Failed to sync slash commands")
+
+    def _load_state(self) -> None:
+        if self.store.load():
+            log.info("Loaded state for %d guild(s) from %s", len(self.store.guilds), self.store.path)
+            return
+        if migrate_legacy(self.store, self.config.env_file.parent, self.config.legacy_env):
+            log.info("Migrated legacy data for %d guild(s) into %s", len(self.store.guilds), self.store.path)
+        self.store.save()
+
+    async def close(self) -> None:
+        self.poll_streams.cancel()
+        if self.twitch is not None:
+            await self.twitch.close()
+        await super().close()
+
+    async def on_ready(self) -> None:
+        log.info(
+            "Logged in as %s (id %s), discord.py %s, bot %s, in %d guild(s)",
+            self.user,
+            self.user.id if self.user else "?",
+            discord.__version__,
+            __version__,
+            len(self.guilds),
+        )
+
+    async def on_guild_join(self, guild: discord.Guild) -> None:
+        log.info("Joined guild %s (%s)", guild.name, guild.id)
+        channel = guild.system_channel
+        if channel and channel.permissions_for(guild.me).send_messages:
+            try:
+                await channel.send(
+                    "Hello! I'm the TwitchBot. An admin can pick the channel for live alerts with "
+                    "`/setup channel`, then add streams with `/stream add`. See `/help` for everything else."
+                )
+            except discord.HTTPException:
+                log.warning("Could not send welcome message in %s", guild.id)
+
+    async def on_guild_remove(self, guild: discord.Guild) -> None:
+        log.info("Removed from guild %s (%s); deleting its settings", guild.name, guild.id)
+        self.store.remove_guild(guild.id)
+        self.store.save()
+
+    async def is_owner(self, user: discord.abc.User) -> bool:
+        if self.config.owner_id:
+            return user.id == self.config.owner_id
+        app = await self.application_info()
+        if app.team:
+            return user.id in {member.id for member in app.team.members}
+        return user.id == app.owner.id
+
+    # ---- Twitch helpers -------------------------------------------------
+    async def fetch_twitch_user(self, login: str) -> TwitchUser | None:
+        assert self.twitch is not None
+        return await first(self.twitch.get_users(logins=[login]))
+
+    async def _resolve_user_ids(self) -> bool:
+        """Fill in Twitch user ids for streams that don't have one yet (new or migrated)."""
+        assert self.twitch is not None
+        missing = sorted({s.login for _, s in self.store.iter_streams() if s.user_id is None})
+        if not missing:
+            return False
+        found: dict[str, TwitchUser] = {}
+        for batch in chunked(missing, TWITCH_BATCH):
+            async for user in self.twitch.get_users(logins=list(batch)):
+                found[user.login] = user
+        for _, stream in self.store.iter_streams():
+            user = found.get(stream.login)
+            if user is not None:
+                stream.user_id = user.id
+                stream.display_name = user.display_name
+            elif stream.user_id is None and stream.login not in self._warned_unknown:
+                self._warned_unknown.add(stream.login)
+                log.warning("Twitch user %r not found (renamed or banned?); it won't be tracked", stream.login)
+        return bool(found)
+
+    async def _fetch_live(self) -> dict[str, LiveInfo]:
+        assert self.twitch is not None
+        user_ids = sorted({s.user_id for _, s in self.store.iter_streams() if s.user_id})
+        live: dict[str, LiveInfo] = {}
+        for batch in chunked(user_ids, TWITCH_BATCH):
+            async for s in self.twitch.get_streams(user_id=list(batch), first=TWITCH_BATCH, stream_type="live"):
+                live[s.user_id] = LiveInfo(
+                    user_id=s.user_id,
+                    login=s.user_login,
+                    display_name=s.user_name,
+                    title=s.title or "",
+                    game_name=s.game_name or "",
+                    thumbnail_url=s.thumbnail_url or "",
+                    viewer_count=s.viewer_count or 0,
+                    started_at=s.started_at,
+                )
+        return live
+
+    # ---- polling loop -----------------------------------------------------
+    @tasks.loop(seconds=60)
+    async def poll_streams(self) -> None:
+        # Never let an exception escape: that would stop the loop for every guild.
+        try:
+            await self._poll_once()
+        except Exception:
+            log.exception("Polling Twitch failed; will retry next interval")
+
+    @poll_streams.before_loop
+    async def _before_poll(self) -> None:
+        await self.wait_until_ready()
+
+    async def _poll_once(self) -> None:
+        changed = await self._resolve_user_ids()
+        live = await self._fetch_live()
+
+        for info in live.values():
+            for _, stream in list(self.store.iter_streams()):
+                if stream.user_id == info.user_id and stream.login != info.login:
+                    log.info("Twitch user %s renamed %s -> %s", info.user_id, stream.login, info.login)
+                    self.store.rename_login(stream.login, info.login)
+                    changed = True
+
+        announcements, planned_changes = plan_announcements(self.store, live)
+        changed |= planned_changes
+        for announcement in announcements:
+            try:
+                handled = await self._announce(announcement)
+            except Exception:
+                log.exception("Announcing %s in guild %s failed", announcement.stream.login, announcement.guild_id)
+                handled = False
+            if handled:
+                announcement.stream.notified = True
+                changed = True
+        if changed:
+            self.store.save()
+
+    # ---- announcements ------------------------------------------------------
+    def resolve_role(self, guild: discord.Guild, stream: TrackedStream) -> discord.Role | None:
+        role = guild.get_role(stream.role_id) if stream.role_id else None
+        if role is None:
+            role = discord.utils.get(guild.roles, name=stream.role_name)
+            if role is not None:
+                stream.role_id = role.id
+        return role
+
+    async def ensure_role(self, guild: discord.Guild, stream: TrackedStream) -> discord.Role:
+        role = self.resolve_role(guild, stream)
+        if role is None:
+            role = await guild.create_role(
+                name=stream.role_name, mentionable=False, reason=f"Live notifications for {stream.login}"
+            )
+            stream.role_id = role.id
+        return role
+
+    async def _announce(self, a: Announcement) -> bool:
+        """Post a go-live message. Returns True if handled (sent, or failed permanently)."""
+        guild = self.get_guild(a.guild_id)
+        if guild is None:
+            return False
+        channel = guild.get_channel(a.channel_id)
+        if not isinstance(channel, discord.abc.Messageable):
+            log.warning("Alert channel %s in guild %s is missing; skipping %s", a.channel_id, guild.id, a.stream.login)
+            return True
+
+        role = self.resolve_role(guild, a.stream)
+        game = f" streaming **{a.info.game_name}**" if a.info.game_name else ""
+        content = f"**{a.info.display_name}** is live{game}!"
+        if role is not None:
+            content = f"{role.mention} {content}"
+        else:
+            content += "\n-# Notification role is missing; an admin can recreate it with `/stream add`."
+        try:
+            await channel.send(
+                content,
+                embed=build_live_embed(a.stream, a.info),
+                allowed_mentions=discord.AllowedMentions(roles=[role] if role else False),
+            )
+        except discord.Forbidden:
+            log.warning("Missing permission to post in channel %s of guild %s", a.channel_id, guild.id)
+            return True
+        log.info("Announced %s in guild %s", a.stream.login, guild.id)
+        return True
+
+
+def build_live_embed(stream: TrackedStream, info: LiveInfo) -> discord.Embed:
+    embed = discord.Embed(
+        title=info.title or "Untitled stream",
+        url=stream.url,
+        colour=TWITCH_PURPLE,
+        timestamp=info.started_at,
+    )
+    embed.set_author(name=info.display_name, url=stream.url)
+    if info.game_name:
+        embed.add_field(name="Game", value=info.game_name, inline=True)
+    embed.add_field(name="Viewers", value=str(info.viewer_count), inline=True)
+    if info.thumbnail_url:
+        # Cache-buster so Discord doesn't show a preview from an earlier stream.
+        thumb = info.thumbnail_url.replace("{width}", "1280").replace("{height}", "720")
+        embed.set_image(url=f"{thumb}?t={int(time.time())}")
+    embed.set_footer(text="Live on Twitch")
+    return embed
+
+
+def setup_logging(config: Config) -> None:
+    config.log_dir.mkdir(parents=True, exist_ok=True)
+    fmt = logging.Formatter("%(asctime)s %(levelname)-8s %(name)s: %(message)s")
+    file_handler = RotatingFileHandler(config.log_dir / "bot.log", maxBytes=2_000_000, backupCount=5, encoding="utf-8")
+    file_handler.setFormatter(fmt)
+    console = logging.StreamHandler()
+    console.setFormatter(fmt)
+    root = logging.getLogger()
+    root.setLevel(config.log_level)
+    root.handlers[:] = [file_handler, console]
+    # discord.py is very chatty at DEBUG; keep it at INFO unless explicitly debugging.
+    logging.getLogger("discord").setLevel(
+        max(logging.INFO, root.level) if config.log_level != "DEBUG" else logging.DEBUG
+    )
+
+
+def main() -> int:
+    try:
+        config = load_config()
+    except ConfigError as exc:
+        print(f"Configuration error: {exc}", file=sys.stderr)
+        return 2
+    setup_logging(config)
+    bot = TwitchNotifierBot(config)
+    try:
+        bot.run(config.discord_token, log_handler=None)
+    except discord.LoginFailure:
+        log.critical("Discord rejected the bot token; check DISCORD_TOKEN in %s", config.env_file)
+        return 2
+    return bot.exit_code
