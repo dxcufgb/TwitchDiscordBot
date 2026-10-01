@@ -1,0 +1,4 @@
+# Versions the current Main.py is written against.
+# discord.py 2.x and twitchAPI 3.x+ are NOT drop-in compatible (see AUDIT.md).
+discord.py==1.7.3
+twitchAPI==2.5.7

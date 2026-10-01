@@ -1,4 +1,4 @@
 *.json
 *.env
 *.log
-*.bat
+*.bat.venv/
