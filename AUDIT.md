@@ -1,5 +1,9 @@
 # TwitchDiscordBot – Code Audit
 
+> **Status (v2.0):** every finding below is addressed by the rewrite in `twitchbot/`. Old data is migrated
+> automatically. See the [resolution table](#7-resolution-in-v20) at the end. The rest of this document
+> describes the **1.x** `Main.py`.
+
 Scope: `Main.py` (the whole bot) at commit `10753bf`. Line numbers refer to that commit.
 Severity: **Critical** = data loss, security hole or bot stops working; **High** = feature is broken;
 **Medium** = robustness/maintainability; **Low** = polish.
@@ -77,3 +81,34 @@ There are also two permission holes. Most issues come from three design choices:
 4. **discord.py 2.x + slash commands** (`/stream add`, `/stream remove`, `/filter add`, `/notify subscribe` with autocomplete). This removes the need for the privileged Message Content intent and the string parsing (M3, M4), and gives per-command permissions (`default_permissions(manage_guild=True)`).
 5. **Optional: Twitch EventSub** (`stream.online` over WebSocket) instead of polling, for instant notifications and no rate-limit concerns.
 6. **Packaging and ops.** Pinned `requirements.txt`, the start scripts and service installers (added), plus an optional `Dockerfile` and GitHub Actions running `ruff` and a few unit tests for the parsing and state code.
+
+## 7. Resolution in v2.0
+
+| Finding | How it's fixed |
+|---|---|
+| C1 state file name | Single `data/state.json` (`storage.py`), absolute paths from the project folder |
+| C2 poller dies | `@tasks.loop` body wraps everything in `try/except` + `logger.exception`; each announcement is isolated (`bot.py`, `test_poll_loop_survives_errors`) |
+| C3 `.env` corruption | `.env` is read-only (python-dotenv); channels live in `state.json`, written via temp file + `os.replace` |
+| C4 `!restart-bot` by nickname | `/restart` checks the application owner/team or `OWNER_ID` |
+| C5 `!remove-role` any role | `/notify subscribe/unsubscribe` only touch the bot's per-stream roles |
+| H1 shared dict | Per-guild `TrackedStream` objects; regression test `test_guilds_are_independent` |
+| H2 `''` guild state | `StateStore.guild()` always returns a `GuildState` |
+| H3 duplicate names | `normalize_login()` (lowercase, URL accepted, validated); streams also tracked by Twitch user id, so renames are followed |
+| H4 role only in first guild / `@here` | Role created per guild on `/stream add`; missing role → post without ping, never `@here` |
+| H5 discord.py 1.7 | discord.py 2.7.1, slash commands, no privileged intents |
+| H6 sync Twitch, new token per call | twitchAPI 4.5.0 (async), one client, batched `get_streams` (100 ids/request) |
+| H7 duplicate loops | Loop started once in `setup_hook` |
+| H8 invite regex | `strip_discord_invites()` with a correct, tested pattern |
+| H9 bare except | Command errors logged via `tree.on_error`; user gets an ephemeral message |
+| M1–M16 | dotenv; Manage Server default permission; typed slash-command options; case-insensitive filters with limits; message splitting; atomic, change-only writes; rotating INFO logs; `on_guild_remove` cleanup; `allowed_mentions`; permission check on `/setup channel` |
+
+### Dependency refresh ("renovate run")
+
+| Package | Before | After | Notes |
+|---|---|---|---|
+| discord.py | 1.7.3 (2021) | 2.7.1 | Major API change: intents, `setup_hook`, app commands |
+| twitchAPI | 2.5.7 (sync, `requests`) | 4.5.0 | Fully async; `await Twitch(...)`, async generators, typed objects |
+| aiohttp (transitive) | 3.7.4 | 3.14.x | `pip-audit` reported **87 advisories** against 3.7.4; none against the new set |
+| python-dotenv | – | 1.2.4 | Replaces the hand-written `.env` parser |
+| Python | any 3.x | ≥ 3.10 | Tested on 3.10, 3.12 and 3.13 |
+| Dev tooling | – | pytest 9.1.1, pytest-asyncio 1.4.0, ruff 0.16.9 | CI on 3.10–3.13; Renovate keeps all of it current |

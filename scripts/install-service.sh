@@ -48,7 +48,7 @@ WorkingDirectory=${BOT_DIR}
 ExecStart=${BOT_DIR}/start-bot.sh
 Restart=always
 RestartSec=10
-# The bot's !restart-bot command re-execs in place; a real crash is handled by Restart=.
+# /restart exits the process; Restart=always brings it back (also after crashes).
 
 [Install]
 WantedBy=multi-user.target

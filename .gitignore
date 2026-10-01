@@ -1,4 +1,16 @@
-*.json
+# Secrets and runtime data
 *.env
+data/
+logs/
 *.log
-*.bat.venv/
+# Legacy 1.x data files (still read once for migration)
+*.json
+!renovate.json
+*.bat
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
