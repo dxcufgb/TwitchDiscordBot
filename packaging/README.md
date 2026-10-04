@@ -41,7 +41,7 @@ Other options: `--prefix DIR`, `--user NAME`, `--no-service`, `--skip-check` (se
 
 Double-click **`install.cmd`** and approve the administrator prompt. The installer:
 
-- installs Python 3.13 with winget if needed;
+- installs Python 3.14 with winget if needed;
 - installs the bot into `C:\ProgramData\TwitchDiscordBot`;
 - registers the **TwitchDiscordBot** scheduled task. The task runs at boot as *LOCAL SERVICE* and restarts the bot if it stops.
 

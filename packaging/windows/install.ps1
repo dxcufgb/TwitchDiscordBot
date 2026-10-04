@@ -103,7 +103,7 @@ function Test-Python($exe, [string[]]$pre) {
 }
 function Find-Python {
     if ($env:PYTHON -and (Test-Path $env:PYTHON)) { $r = Test-Python $env:PYTHON @(); if ($r) { return $r } }
-    foreach ($v in '3.13', '3.12', '3.11', '3.10') {
+    foreach ($v in '3.14', '3.13', '3.12', '3.11', '3.10') {
         if (Get-Command py -ErrorAction SilentlyContinue) { $r = Test-Python 'py' @("-$v"); if ($r) { return $r } }
     }
     foreach ($exe in @('python') + (Get-ChildItem "$env:ProgramFiles\Python3*\python.exe" -ErrorAction SilentlyContinue |
@@ -118,11 +118,11 @@ if (-not $python) {
     if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
         Fail 'Python 3.10+ is required. Install it for all users from https://www.python.org/downloads/ and run the installer again.'
     }
-    if (-not (Confirm-Step 'Python 3.10+ is required. Install Python 3.13 for all users with winget now?')) {
+    if (-not (Confirm-Step 'Python 3.10+ is required. Install Python 3.14 for all users with winget now?')) {
         Fail 'Python 3.10+ is required.'
     }
-    Info 'Installing Python 3.13 (this can take a few minutes)'
-    & winget install --exact --id Python.Python.3.13 --scope machine --silent --accept-package-agreements --accept-source-agreements
+    Info 'Installing Python 3.14 (this can take a few minutes)'
+    & winget install --exact --id Python.Python.3.14 --scope machine --silent --accept-package-agreements --accept-source-agreements
     $python = Find-Python
     if (-not $python) { Fail 'Python was installed but could not be found. Open a new window and run the installer again.' }
 }

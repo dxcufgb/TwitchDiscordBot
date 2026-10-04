@@ -103,7 +103,7 @@ python -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
 .venv/bin/ruff check . && .venv/bin/ruff format --check . && .venv/bin/pytest
 ```
 
-CI runs the same checks on Python 3.10–3.13. Renovate (`renovate.json`) opens PRs for dependency updates once
+CI runs the same checks on Python 3.10–3.14. Renovate (`renovate.json`) opens PRs for dependency updates once
 the [Renovate GitHub app](https://github.com/apps/renovate) is enabled for the repository.
 
 See [AUDIT.md](AUDIT.md) for the audit that led to the 2.0 rewrite.
