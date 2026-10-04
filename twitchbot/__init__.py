@@ -1,3 +1,3 @@
 """Discord bot that announces when Twitch streams go live."""
 
-__version__ = "2.0.0"
+__version__ = "2.0.1"
