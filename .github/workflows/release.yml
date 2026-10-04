@@ -1,12 +1,20 @@
 name: Release
 
-# Push a tag like v2.0.0 (matching twitchbot/__version__) to test, build and publish a GitHub release.
+# Two ways to publish a release (the version always comes from twitchbot/__version__):
+#   * Actions tab -> Release -> "Run workflow" on main: creates the tag v<version> and the release.
+#   * Push a tag like v2.0.0 yourself; it must match twitchbot/__version__.
+# Either way the full CI (tests + real installer runs on Linux and Windows) must pass first.
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
   contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 jobs:
   ci:
@@ -22,15 +30,41 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.13"
+      - name: Determine the tag
+        id: tag
+        run: |
+          version="$(python -c 'import twitchbot; print(twitchbot.__version__)')"
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            if [[ "$GITHUB_REF" != "refs/heads/${{ github.event.repository.default_branch }}" ]]; then
+              echo "::error::Run this workflow on the default branch (got $GITHUB_REF)."
+              exit 1
+            fi
+            tag="v$version"
+            if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
+              echo "::error::Tag $tag already exists. Bump the version in twitchbot/__init__.py and pyproject.toml first."
+              exit 1
+            fi
+          else
+            tag="$GITHUB_REF_NAME"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Releasing $tag from $GITHUB_SHA"
       - name: Build release archives
-        run: python scripts/build_release.py --expect-version "$GITHUB_REF_NAME"
+        run: python scripts/build_release.py --expect-version "${{ steps.tag.outputs.tag }}"
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
         run: |
           flags=()
-          if [[ "$GITHUB_REF_NAME" == *-* ]]; then flags+=(--prerelease); fi
-          gh release create "$GITHUB_REF_NAME" \
+          if [[ "$TAG" == *-* ]]; then flags+=(--prerelease); fi
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            # Creates the tag on the commit that was tested and built.
+            flags+=(--target "$GITHUB_SHA")
+          else
+            flags+=(--verify-tag)
+          fi
+          gh release create "$TAG" \
             dist/*-linux.tar.gz dist/*-windows.zip dist/SHA256SUMS.txt \
-            --title "TwitchDiscordBot ${GITHUB_REF_NAME#v}" \
-            --notes-file dist/RELEASE_NOTES.md --generate-notes --verify-tag "${flags[@]}"
+            --title "TwitchDiscordBot ${TAG#v}" \
+            --notes-file dist/RELEASE_NOTES.md --generate-notes "${flags[@]}"
