@@ -94,8 +94,18 @@ if [[ $ACTION == uninstall ]]; then
 fi
 
 # ---------------------------------------------------------------- python
-python_ok() {  # python_ok CMD -> usable Python >= 3.10 with venv + ensurepip
-    "$1" -c 'import sys, venv, ensurepip; sys.exit(sys.version_info < (3, 10))' >/dev/null 2>&1
+in_home_dir() {  # in_home_dir CMD -> 0 if the interpreter or its standard library lives under /home or /root
+    # The service can't use such a Python: systemd's ProtectHome=yes hides those directories,
+    # and the bot user usually can't read them anyway (pyenv, uv, conda installs).
+    local path
+    while IFS= read -r path; do
+        case "$path" in /home/* | /root | /root/* | /run/user/*) return 0 ;; esac
+    done < <("$1" -c 'import os, sys; print(os.path.realpath(sys.executable)); print(os.path.realpath(sys.base_prefix))' 2>/dev/null)
+    return 1
+}
+
+python_ok() {  # python_ok CMD -> usable Python >= 3.10 with venv + ensurepip, installed outside home directories
+    "$1" -c 'import sys, venv, ensurepip; sys.exit(sys.version_info < (3, 10))' >/dev/null 2>&1 && ! in_home_dir "$1"
 }
 
 find_python() {
@@ -129,6 +139,10 @@ install_python() {
     bash -c "$cmd"
 }
 
+HOME_PYTHON_HELP="The service can't use a Python inside a home directory (systemd's ProtectHome hides them and the bot user can't read them). Use a system-wide Python: your package manager's, or one installed under /usr/local or /opt."
+if [[ -n ${PYTHON:-} ]] && command -v "$PYTHON" >/dev/null 2>&1 && in_home_dir "$PYTHON"; then
+    die "PYTHON=$PYTHON is inside a home directory. $HOME_PYTHON_HELP"
+fi
 PY="$(find_python || true)"
 if [[ -z $PY ]]; then
     install_python
@@ -180,8 +194,13 @@ if [[ $ACTION == install ]]; then
         fi
     fi
 
-    if [[ -x $VENV_PY ]] && ! "$VENV_PY" -c 'import sys; sys.exit(sys.version_info < (3, 10))' >/dev/null 2>&1; then
-        info "Existing virtual environment is broken or too old; recreating it"
+    # The bot user must be able to run the interpreter (e.g. not a Python under a 0700 directory).
+    # (run from / so the check doesn't depend on the current directory, e.g. a 0700 home folder)
+    (cd / && as_bot "$PY" -c 'import venv' >/dev/null 2>&1) ||
+        die "User $BOT_USER cannot run $PY. Make it readable and executable for all users, or use a system-wide Python (PYTHON=/path/to/python3)."
+
+    if [[ -x $VENV_PY ]] && ! (cd / && as_bot "$VENV_PY" -c 'import sys; sys.exit(sys.version_info < (3, 10))' >/dev/null 2>&1); then
+        info "Existing virtual environment is broken, too old or not usable by $BOT_USER; recreating it"
         rm -rf "$PREFIX/.venv"
     fi
     if [[ ! -x $VENV_PY ]]; then
