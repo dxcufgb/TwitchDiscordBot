@@ -111,10 +111,12 @@ See [AUDIT.md](AUDIT.md) for the audit that led to the 2.0 rewrite.
 ## Releasing
 
 1. Bump the version in `twitchbot/__init__.py` and `pyproject.toml` (they must match) and merge to `main`.
-2. Tag and push: `git tag v2.0.0 && git push origin v2.0.0`.
+2. Publish, either way:
+   - **Actions → Release → Run workflow** on `main`. This creates the tag `v<version>` and the release. It
+     refuses to run if that tag already exists.
+   - Or push a tag yourself: `git tag v2.0.0 && git push origin v2.0.0`.
 
-The **Release** workflow runs the full CI, including real installs on Linux (systemd) and Windows (Task
+The **Release** workflow runs the full CI first, including real installs on Linux (systemd) and Windows (Task
 Scheduler). It then builds the archives with `scripts/build_release.py` and publishes a GitHub release with the
-archives, `SHA256SUMS.txt` and generated notes. Tags with a hyphen (`v2.1.0-rc1`) become pre-releases. To
+archives, `SHA256SUMS.txt` and generated notes. Versions with a hyphen (`2.1.0-rc1`) become pre-releases. To
 inspect the archives locally, run `python scripts/build_release.py`; they're written to `dist/`.
-
