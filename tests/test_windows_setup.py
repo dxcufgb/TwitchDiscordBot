@@ -28,3 +28,16 @@ def test_packaged_files_exist():
     for source in re.findall(r'^Source: "([^"]+)"', ISS.read_text(encoding="ascii"), re.M):
         matches = list(base.glob(source.replace("\\", "/")))
         assert matches, f"[Files] source not found: {source}"
+
+
+def test_plain_msgbox_only_in_interactive_code():
+    # /SUPPRESSMSGBOXES does not suppress MsgBox, so a MsgBox reachable in a silent install hangs it.
+    # Plain MsgBox is only allowed where the code already returns early when running silently.
+    allowed = {"NextButtonClick", "InitializeUninstall"}
+    current = None
+    for number, line in enumerate(ISS.read_text(encoding="ascii").splitlines(), 1):
+        header = re.match(r"\s*(?:function|procedure)\s+(\w+)", line)
+        if header:
+            current = header.group(1)
+        if re.search(r"(?<!Suppressible)MsgBox\(", line):
+            assert current in allowed, f"line {number}: plain MsgBox in {current}; use SuppressibleMsgBox"

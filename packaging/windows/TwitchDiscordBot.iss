@@ -283,11 +283,12 @@ begin
     WizardForm.ProgressGauge.Style := npbstNormal;
   end;
   Log('install.ps1 exit code: ' + IntToStr(Code));
+  { SuppressibleMsgBox: a plain MsgBox would block a /VERYSILENT /SUPPRESSMSGBOXES install forever. }
   if Code <> 0 then
-    MsgBox('TwitchDiscordBot was installed, but the bot did not start correctly. Last lines of the setup log:' + #13#10#13#10 +
+    SuppressibleMsgBox('TwitchDiscordBot was installed, but the bot did not start correctly. Last lines of the setup log:' + #13#10#13#10 +
       ReadLines(ExpandConstant('{app}\logs\setup.log'), 12) + #13#10 +
       'Full log: ' + ExpandConstant('{app}\logs\setup.log') + #13#10 +
-      'You can run this setup again to enter other credentials.', mbError, MB_OK);
+      'You can run this setup again to enter other credentials.', mbError, MB_OK, IDOK);
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
