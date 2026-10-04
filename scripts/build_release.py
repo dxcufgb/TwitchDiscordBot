@@ -120,10 +120,13 @@ cd {NAME}-{version}
 sudo ./install.sh
 ```
 
-**Windows 10/11 or Server 2019+**: extract `{NAME}-{version}-windows.zip`, then double-click `install.cmd`.
+**Windows 10/11 or Server 2019+**: download and run `{NAME}-{version}-windows-setup.exe`. A setup wizard
+asks for the credentials, checks them, and installs everything. The setup isn't code-signed yet, so Windows
+SmartScreen may warn about it; click *More info* -> *Run anyway*. For scripted installs, use
+`{NAME}-{version}-windows.zip` and run `install.cmd`.
 
-The installer sets up Python if needed, installs the bot and its packages, asks for the Discord/Twitch
-credentials and checks them, and starts the bot as a service that runs at boot. Running a newer release's
+The installers set up Python if needed, install the bot and its packages, ask for the Discord/Twitch
+credentials and check them, and start the bot as a service that runs at boot. Running a newer release's
 installer upgrades in place and keeps your settings and data. See `README.md` in the archive for details.
 
 Verify downloads with `sha256sum -c SHA256SUMS.txt` (Linux) or `Get-FileHash` (Windows).

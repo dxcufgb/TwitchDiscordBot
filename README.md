@@ -25,7 +25,8 @@ Download the archive for your OS from the [Releases page](../../releases). Each 
 an installer:
 
 - **Linux:** `tar xzf twitchdiscordbot-<version>-linux.tar.gz && cd twitchdiscordbot-<version> && sudo ./install.sh`
-- **Windows:** extract `twitchdiscordbot-<version>-windows.zip` and double-click `install.cmd`
+- **Windows:** run `twitchdiscordbot-<version>-windows-setup.exe`, a setup wizard that also adds an entry
+  to *Apps & features* for uninstalling. For scripted installs, use the `-windows.zip` and run `install.cmd`.
 
 The installer:
 
