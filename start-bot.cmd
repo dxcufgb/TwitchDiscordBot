@@ -57,11 +57,18 @@ set "PYTHONUNBUFFERED=1"
 
 :run
 echo [start-bot] %date% %time% Starting bot
-"%VENV_PY%" Main.py
+"%VENV_PY%" "%~dp0Main.py"
 set "EXITCODE=%ERRORLEVEL%"
 if "%WATCH%"=="0" exit /b %EXITCODE%
+rem Exit code 2 = bad configuration or token rejected by Discord: retrying can't help.
+if "%EXITCODE%"=="2" (
+    echo [start-bot] %date% %time% Bot stopped: configuration error or the token was rejected. Fix .env, then start it again.
+    exit /b 2
+)
 echo [start-bot] %date% %time% Bot exited with code %EXITCODE%, restarting in %RESTART_DELAY%s
-timeout /t %RESTART_DELAY% /nobreak >nul
+rem "timeout" fails without a console (scheduled task), so wait with ping instead.
+set /a PINGS=RESTART_DELAY+1
+ping -n %PINGS% 127.0.0.1 >nul
 goto :run
 
 :usage

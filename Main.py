@@ -1,4 +1,7 @@
-"""Entry point: ``python Main.py`` (or use start-bot.sh / start-bot.cmd)."""
+"""Entry point: ``python Main.py`` (or use start-bot.sh / start-bot.cmd).
+
+Options: ``--check`` verifies .env and the Discord/Twitch credentials, ``--version`` prints the version.
+"""
 
 import sys
 
