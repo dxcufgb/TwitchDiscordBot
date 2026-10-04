@@ -60,6 +60,24 @@ install, set `DISCORD_TOKEN`, `TWITCH_APP_ID` and `TWITCH_APP_SECRET` in the env
 | Upgrade | Run the newer setup wizard, or `install.cmd` from the newer release folder |
 | Uninstall | *Apps & features* (setup wizard), or `C:\ProgramData\TwitchDiscordBot\uninstall.cmd` (zip; add `-Purge` to delete settings and data) |
 
+## Troubleshooting
+
+**Typing `/` shows no TwitchBot commands, and `/setup channel` is sent as plain text.** The bot wasn't
+authorized for slash commands in that server. This happens when it was invited with only the `bot` scope,
+for example by an old invite link. Re-authorize it; the bot stays in the server and keeps its settings:
+
+1. Open `https://discord.com/oauth2/authorize?client_id=<APPLICATION ID>&scope=bot+applications.commands&permissions=268585984`.
+   Your *Application ID* is under *General Information* in the Developer Portal. The bot also logs this
+   exact link at startup, and `python Main.py --check` prints it.
+2. Pick the server and click *Authorize*.
+3. Restart Discord, or press Ctrl+R, so it reloads the command list.
+
+The bot checks this at startup. When a server is missing the permission, it posts the link in that server
+once and logs a warning.
+
+**Commands show up but say "This interaction failed".** The bot isn't running. Check the service and
+`logs/bot.log`.
+
 ## After installing
 
 In Discord, run `/setup channel` in the channel for alerts, then `/stream add <twitch name>`. `/help` lists

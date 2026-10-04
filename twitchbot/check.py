@@ -11,7 +11,8 @@ from twitchAPI.type import TwitchAuthorizationException
 
 from .config import Config
 
-DISCORD_ME_URL = "https://discord.com/api/v10/users/@me"
+DISCORD_API = "https://discord.com/api/v10"
+DISCORD_ME_URL = f"{DISCORD_API}/users/@me"
 
 
 @dataclass(frozen=True)
@@ -52,13 +53,47 @@ async def check_twitch(app_id: str, app_secret: str) -> CheckResult:
     return CheckResult("Twitch app credentials", True, "app access token issued")
 
 
+async def check_slash_commands(token: str) -> CheckResult:
+    """Informational: how many slash commands Discord has for the bot, plus the invite link with both scopes."""
+    from .bot import invite_url
+
+    name = "Slash commands"
+    headers = {"Authorization": f"Bot {token}"}
+    try:
+        timeout = aiohttp.ClientTimeout(total=20)
+        async with aiohttp.ClientSession(timeout=timeout, trust_env=True, headers=headers) as session:
+            async with session.get(f"{DISCORD_API}/oauth2/applications/@me") as resp:
+                if resp.status != 200:
+                    return CheckResult(name, True, f"could not read the application (HTTP {resp.status})")
+                app_id = int((await resp.json())["id"])
+            async with session.get(f"{DISCORD_API}/applications/{app_id}/commands") as resp:
+                count = len(await resp.json()) if resp.status == 200 else None
+    except (aiohttp.ClientError, asyncio.TimeoutError, KeyError, ValueError) as exc:
+        return CheckResult(name, True, f"could not check ({type(exc).__name__})")
+    registered = (
+        "none registered yet (the bot registers them when it starts)"
+        if not count
+        else f"{count} registered"
+        if count is not None
+        else "count unavailable"
+    )
+    return CheckResult(
+        name,
+        True,
+        f"{registered}. If they don't show up in your server, re-invite the bot with: {invite_url(app_id)}",
+    )
+
+
 async def run_checks(config: Config) -> list[CheckResult]:
-    return list(
+    results = list(
         await asyncio.gather(
             check_discord(config.discord_token),
             check_twitch(config.twitch_app_id, config.twitch_app_secret),
         )
     )
+    if results[0].ok:
+        results.append(await check_slash_commands(config.discord_token))
+    return results
 
 
 def print_results(results: list[CheckResult]) -> bool:
