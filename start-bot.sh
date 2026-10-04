@@ -70,6 +70,10 @@ while true; do
     "$VENV_PY" "$BOT_DIR/Main.py" &
     child=$!
     set +e; wait "$child"; code=$?; set -e
+    if [[ $code -eq 2 ]]; then
+        log "Bot stopped: configuration error or the token was rejected (exit code 2). Fix .env, then start it again."
+        exit 2
+    fi
     log "Bot exited with code $code, restarting in ${RESTART_DELAY}s"
     sleep "$RESTART_DELAY"
 done

@@ -309,6 +309,8 @@ ExecStart=${VENV_PY} ${PREFIX}/Main.py
 # /restart in Discord exits the bot; systemd starts it again (also after crashes).
 Restart=always
 RestartSec=10
+# Exit code 2 = bad configuration or token rejected by Discord: retrying can't help, so don't loop.
+RestartPreventExitStatus=2
 Environment=PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
 
 # Hardening: the bot may only write to its data and log folders.
