@@ -100,7 +100,7 @@ python_ok() {  # python_ok CMD -> usable Python >= 3.10 with venv + ensurepip
 
 find_python() {
     local cand
-    for cand in "${PYTHON:-}" python3.13 python3.12 python3.11 python3.10 python3; do
+    for cand in "${PYTHON:-}" python3.14 python3.13 python3.12 python3.11 python3.10 python3; do
         [[ -n $cand ]] && command -v "$cand" >/dev/null 2>&1 && python_ok "$cand" && { command -v "$cand"; return 0; }
     done
     return 1
