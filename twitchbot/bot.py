@@ -25,6 +25,26 @@ log = logging.getLogger("twitchbot")
 
 TWITCH_PURPLE = discord.Colour(0x9146FF)
 TWITCH_BATCH = 100  # max ids/logins per Helix request
+DISCORD_MISSING_ACCESS = 50001
+
+# Permissions the bot needs; used for the invite link.
+BOT_PERMISSIONS = discord.Permissions(
+    view_channel=True, send_messages=True, embed_links=True, mention_everyone=True, manage_roles=True
+)
+
+
+def invite_url(application_id: int) -> str:
+    """Invite / re-authorize link with both scopes slash commands need."""
+    return discord.utils.oauth_url(application_id, permissions=BOT_PERMISSIONS, scopes=("bot", "applications.commands"))
+
+
+COMMANDS_NOT_AUTHORIZED = (
+    "**My slash commands aren't enabled in this server**, so `/setup`, `/stream` and the others don't show up. "
+    "This happens when the bot was invited without the `applications.commands` permission (common for bots "
+    "invited before 2023).\n"
+    "A server admin can fix it by opening this link and picking this server; the bot stays and keeps its "
+    "settings:\n<{url}>"
+)
 
 
 class TwitchNotifierBot(discord.Client):
@@ -38,6 +58,7 @@ class TwitchNotifierBot(discord.Client):
         self.twitch: Twitch | None = None
         self.exit_code = 0
         self._warned_unknown: set[str] = set()
+        self._checked_command_access = False
         self.poll_streams.change_interval(seconds=config.poll_interval)
 
     # ---- lifecycle ----------------------------------------------------
@@ -62,6 +83,10 @@ class TwitchNotifierBot(discord.Client):
             log.info("Synced %d slash command(s)", len(synced))
         except discord.HTTPException:
             log.exception("Failed to sync slash commands")
+        if self.application_id:
+            log.info(
+                "Invite / re-authorize link (adds slash commands to a server): %s", invite_url(self.application_id)
+            )
 
     def _load_state(self) -> None:
         if self.store.load():
@@ -86,9 +111,62 @@ class TwitchNotifierBot(discord.Client):
             __version__,
             len(self.guilds),
         )
+        # on_ready fires again after reconnects; one check per process is enough.
+        if not self._checked_command_access:
+            self._checked_command_access = True
+            for guild in list(self.guilds):
+                await self.check_command_access(guild)
+
+    async def check_command_access(self, guild: discord.Guild) -> bool:
+        """Return False (and tell the server once) if the bot may not use slash commands there.
+
+        Discord answers "Missing Access" (50001) to a command lookup in a server where the bot was
+        authorized without the applications.commands scope; global commands are then invisible there.
+        """
+        try:
+            await self.tree.fetch_commands(guild=guild)
+        except discord.Forbidden as exc:
+            if exc.code != DISCORD_MISSING_ACCESS:
+                log.warning("Could not check slash commands in guild %s: %s", guild.id, exc)
+                return True
+        except discord.HTTPException as exc:
+            log.warning("Could not check slash commands in guild %s: %s", guild.id, exc)
+            return True
+        else:
+            state = self.store.guilds.get(guild.id)
+            if state is not None and state.commands_warning_sent:
+                state.commands_warning_sent = False  # fixed; warn again if it ever breaks
+                self.store.save()
+            return True
+
+        url = invite_url(self.application_id) if self.application_id else "(application id unknown)"
+        log.warning(
+            "Slash commands are NOT authorized in guild %s (%s): re-invite the bot with %s", guild.name, guild.id, url
+        )
+        state = self.store.guild(guild.id)
+        if not state.commands_warning_sent:
+            channel = self._notice_channel(guild, state.channel_id)
+            if channel is not None:
+                try:
+                    await channel.send(COMMANDS_NOT_AUTHORIZED.format(url=url))
+                    state.commands_warning_sent = True
+                    self.store.save()
+                except discord.HTTPException:
+                    log.warning("Could not post the slash command notice in guild %s", guild.id)
+        return False
+
+    def _notice_channel(self, guild: discord.Guild, preferred_id: int | None) -> discord.TextChannel | None:
+        candidates = [guild.get_channel(preferred_id) if preferred_id else None, guild.system_channel]
+        candidates += sorted(guild.text_channels, key=lambda c: c.position)
+        for channel in candidates:
+            if isinstance(channel, discord.TextChannel) and channel.permissions_for(guild.me).send_messages:
+                return channel
+        return None
 
     async def on_guild_join(self, guild: discord.Guild) -> None:
         log.info("Joined guild %s (%s)", guild.name, guild.id)
+        if not await self.check_command_access(guild):
+            return  # the notice already explains what to do
         channel = guild.system_channel
         if channel and channel.permissions_for(guild.me).send_messages:
             try:

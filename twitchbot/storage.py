@@ -95,18 +95,24 @@ class TrackedStream:
 class GuildState:
     channel_id: int | None = None
     streams: dict[str, TrackedStream] = field(default_factory=dict)
+    # True once we told this server that slash commands aren't authorized there (don't repeat on every start).
+    commands_warning_sent: bool = False
 
     def to_dict(self) -> dict:
-        return {
+        data: dict = {
             "channel_id": self.channel_id,
             "streams": {login: s.to_dict() for login, s in sorted(self.streams.items())},
         }
+        if self.commands_warning_sent:
+            data["commands_warning_sent"] = True
+        return data
 
     @classmethod
     def from_dict(cls, data: dict) -> GuildState:
         return cls(
             channel_id=data.get("channel_id"),
             streams={login: TrackedStream.from_dict(login, s) for login, s in (data.get("streams") or {}).items()},
+            commands_warning_sent=bool(data.get("commands_warning_sent", False)),
         )
 
 
