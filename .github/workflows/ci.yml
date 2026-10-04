@@ -118,3 +118,75 @@ jobs:
           if (Get-ScheduledTask -TaskName TwitchDiscordBot -ErrorAction SilentlyContinue) { throw 'task not removed' }
           if (Test-Path $dir) { throw 'install folder not removed' }
           exit 0
+
+  # Builds the setup wizard (Inno Setup, preinstalled on the runner), installs it silently with fake
+  # credentials, checks the result, upgrades over it and uninstalls with /PURGE.
+  windows-setup:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+      - name: Build setup.exe
+        shell: pwsh
+        run: |
+          $version = python -c "import twitchbot; print(twitchbot.__version__)"
+          $iscc = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'
+          if (-not (Test-Path $iscc)) { throw "Inno Setup not found at $iscc" }
+          & $iscc /Qp "/DAppVersion=$version" packaging/windows/TwitchDiscordBot.iss
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          Get-ChildItem dist | Format-Table Name, Length
+      - uses: actions/upload-artifact@v7
+        with:
+          name: windows-setup
+          path: dist/*-windows-setup.exe
+          if-no-files-found: error
+      - name: Silent install
+        shell: pwsh
+        run: |
+          $exe = (Get-Item dist/*-windows-setup.exe).FullName
+          $env:DISCORD_TOKEN = 'ci-fake-token'; $env:TWITCH_APP_ID = 'ci'; $env:TWITCH_APP_SECRET = 'ci'
+          $p = Start-Process $exe -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/LOG=$env:RUNNER_TEMP\setup-1.log" -Wait -PassThru
+          "setup exit code: $($p.ExitCode)"
+          $dir = "$env:ProgramData\TwitchDiscordBot"
+          Get-Content "$dir\logs\setup.log" -ErrorAction SilentlyContinue
+          if ($p.ExitCode -ne 0) { Get-Content "$env:RUNNER_TEMP\setup-1.log"; throw 'setup failed' }
+          if (-not (Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{B7E3F0A4-5C2D-4E8B-9F1A-6D3C2B7A8E51}_is1')) {
+            throw 'no Apps & features entry'
+          }
+          $task = Get-ScheduledTask -TaskName TwitchDiscordBot
+          "task runs as: $($task.Principal.UserId)"
+          if ($task.Principal.UserId -notmatch 'LOCAL ?SERVICE') { throw 'task should run as LOCAL SERVICE' }
+          $readers = (Get-Acl "$dir\.env").Access.IdentityReference.Value
+          "'.env' readable by: $($readers -join ', ')"
+          if ($readers -match 'Users|Everyone') { throw '.env must not be readable by normal users' }
+          if ((Get-Content "$dir\VERSION").Trim() -ne (python -c "import twitchbot; print(twitchbot.__version__)")) { throw 'VERSION mismatch' }
+          $log = "$dir\logs\bot.log"
+          foreach ($i in 1..30) {
+            if ((Test-Path $log) -and (Select-String -Quiet -Path $log -Pattern 'Discord rejected the bot token')) { break }
+            Start-Sleep -Seconds 2
+          }
+          Get-Content $log -ErrorAction SilentlyContinue
+          if (-not (Select-String -Quiet -Path $log -Pattern 'Discord rejected the bot token')) { throw 'bot did not run' }
+          exit 0
+      - name: Upgrade by running setup again, then uninstall with /PURGE
+        shell: pwsh
+        run: |
+          $exe = (Get-Item dist/*-windows-setup.exe).FullName
+          $dir = "$env:ProgramData\TwitchDiscordBot"
+          Remove-Item Env:DISCORD_TOKEN, Env:TWITCH_APP_ID, Env:TWITCH_APP_SECRET -ErrorAction SilentlyContinue
+          $p = Start-Process $exe -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/LOG=$env:RUNNER_TEMP\setup-2.log" -Wait -PassThru
+          "upgrade exit code: $($p.ExitCode)"
+          if ($p.ExitCode -ne 0) { Get-Content "$env:RUNNER_TEMP\setup-2.log"; throw 'upgrade failed' }
+          if (-not (Select-String -Quiet -Path "$dir\.env" -Pattern 'ci-fake-token')) { throw 'settings lost on upgrade' }
+          if (-not (Get-ScheduledTask -TaskName TwitchDiscordBot -ErrorAction SilentlyContinue)) { throw 'task missing after upgrade' }
+          $p = Start-Process "$dir\unins000.exe" -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/PURGE' -Wait -PassThru
+          "uninstall exit code: $($p.ExitCode)"
+          foreach ($i in 1..30) { if (-not (Test-Path $dir)) { break }; Start-Sleep -Seconds 2 }
+          if (Get-ScheduledTask -TaskName TwitchDiscordBot -ErrorAction SilentlyContinue) { throw 'task not removed' }
+          if (Test-Path $dir) { Get-ChildItem -Recurse -Force $dir | Select-Object -First 20 FullName; throw 'install folder not removed' }
+          if (Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{B7E3F0A4-5C2D-4E8B-9F1A-6D3C2B7A8E51}_is1') {
+            throw 'Apps & features entry not removed'
+          }
+          exit 0

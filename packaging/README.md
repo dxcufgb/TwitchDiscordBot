@@ -39,7 +39,14 @@ Other options: `--prefix DIR`, `--user NAME`, `--no-service`, `--skip-check` (se
 
 ## Windows 10/11 or Windows Server
 
-Double-click **`install.cmd`** and approve the administrator prompt. The installer:
+**Setup wizard (recommended):** run `twitchdiscordbot-<version>-windows-setup.exe` from the release page. It
+asks for the credentials, checks them, and installs everything listed below. Uninstall it from
+*Settings -> Apps -> Installed apps*; you can choose there whether to keep your settings. The setup isn't
+code-signed yet, so Windows SmartScreen may warn about it: click *More info* -> *Run anyway*. For a silent
+install, set `DISCORD_TOKEN`, `TWITCH_APP_ID` and `TWITCH_APP_SECRET` in the environment and run
+`setup.exe /VERYSILENT /SUPPRESSMSGBOXES`.
+
+**From the zip:** double-click **`install.cmd`** and approve the administrator prompt. Either way, the installer:
 
 - installs Python 3.14 with winget if needed;
 - installs the bot into `C:\ProgramData\TwitchDiscordBot`;
@@ -49,9 +56,9 @@ Double-click **`install.cmd`** and approve the administrator prompt. The install
 |---|---|
 | Logs | `C:\ProgramData\TwitchDiscordBot\logs\bot.log` |
 | Restart | Task Scheduler → TwitchDiscordBot → End, then Run |
-| Change credentials | `C:\ProgramData\TwitchDiscordBot\install.cmd -Reconfigure` |
-| Upgrade | run `install.cmd` from the newer release folder |
-| Uninstall | `C:\ProgramData\TwitchDiscordBot\uninstall.cmd` (add `-Purge` to delete settings and data) |
+| Change credentials | Run the setup wizard again, or `C:\ProgramData\TwitchDiscordBot\install.cmd -Reconfigure` |
+| Upgrade | Run the newer setup wizard, or `install.cmd` from the newer release folder |
+| Uninstall | *Apps & features* (setup wizard), or `C:\ProgramData\TwitchDiscordBot\uninstall.cmd` (zip; add `-Purge` to delete settings and data) |
 
 ## After installing
 

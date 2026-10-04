@@ -14,6 +14,8 @@
 
 .PARAMETER Reconfigure   Enter new credentials and restart.
 .PARAMETER Uninstall     Remove the task and program files (keeps .env, data and logs; add -Purge to delete them too).
+.PARAMETER StopService   Only stop the bot (used by the setup wizard before it replaces files).
+.PARAMETER RemoveService Only stop the bot and remove its scheduled task (used by the setup wizard's uninstaller).
 .PARAMETER NoService     Don't register the scheduled task.
 .PARAMETER SkipCheck     Don't verify the credentials against Discord/Twitch.
 .PARAMETER Yes           Never prompt; credentials come from DISCORD_TOKEN, TWITCH_APP_ID, TWITCH_APP_SECRET (OWNER_ID optional).
@@ -23,6 +25,8 @@ param(
     [string]$InstallDir = (Join-Path $env:ProgramData 'TwitchDiscordBot'),
     [switch]$Reconfigure,
     [switch]$Uninstall,
+    [switch]$StopService,
+    [switch]$RemoveService,
     [switch]$Purge,
     [switch]$NoService,
     [switch]$SkipCheck,
@@ -66,6 +70,17 @@ function Stop-Bot {
 $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
 if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     Fail 'Please run as administrator (double-click install.cmd, or use an elevated PowerShell).'
+}
+
+# ------------------------------------------------------------------ stop / remove the task only
+if ($StopService -or $RemoveService) {
+    Info 'Stopping the bot'
+    Stop-Bot
+    if ($RemoveService) {
+        Info 'Removing the scheduled task'
+        Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
+    }
+    exit 0
 }
 
 # ------------------------------------------------------------------ uninstall
