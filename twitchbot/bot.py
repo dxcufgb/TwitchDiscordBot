@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import argparse
+import asyncio
 import logging
 import sys
 import time
@@ -274,12 +276,25 @@ def setup_logging(config: Config) -> None:
     )
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="Main.py", description="Twitch live notifications for Discord")
+    parser.add_argument("--version", action="version", version=f"TwitchDiscordBot {__version__}")
+    parser.add_argument(
+        "--check", action="store_true", help="verify .env and the Discord/Twitch credentials, then exit"
+    )
+    args = parser.parse_args(argv)
+
     try:
         config = load_config()
     except ConfigError as exc:
         print(f"Configuration error: {exc}", file=sys.stderr)
         return 2
+
+    if args.check:
+        from .check import print_results, run_checks
+
+        print(f"Configuration file: {config.env_file}")
+        return 0 if print_results(asyncio.run(run_checks(config))) else 1
     setup_logging(config)
     bot = TwitchNotifierBot(config)
     try:

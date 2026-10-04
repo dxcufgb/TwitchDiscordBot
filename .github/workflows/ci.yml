@@ -4,6 +4,10 @@ on:
   push:
     branches: [main, master]
   pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
 
 jobs:
   test:
@@ -23,3 +27,92 @@ jobs:
       - run: ruff check .
       - run: ruff format --check .
       - run: pytest
+
+  # Installs the release archive on a real systemd host. The credentials are fake on purpose:
+  # Discord rejecting the token proves the service started as the bot user, read .env and wrote its log.
+  installer-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Shellcheck
+        run: shellcheck packaging/linux/install.sh start-bot.sh scripts/install-service.sh
+      - name: Build release archives
+        run: python3 scripts/build_release.py --out dist
+      - name: Install (systemd service)
+        run: |
+          tar xzf dist/twitchdiscordbot-*-linux.tar.gz -C "$RUNNER_TEMP"
+          cd "$RUNNER_TEMP"/twitchdiscordbot-*/
+          sudo DISCORD_TOKEN=ci-fake-token TWITCH_APP_ID=ci TWITCH_APP_SECRET=ci ./install.sh --yes --skip-check \
+            || echo "installer exited with $? (expected: the bot can't log in with a fake token)"
+          sudo systemd-analyze verify /etc/systemd/system/twitchdiscordbot.service
+          test "$(sudo stat -c '%U:%G %a' /opt/twitchdiscordbot/.env)" = "root:twitchbot 640"
+          for _ in $(seq 30); do
+            sudo grep -q "Discord rejected the bot token" /opt/twitchdiscordbot/logs/bot.log 2>/dev/null && break
+            sleep 2
+          done
+          sudo cat /opt/twitchdiscordbot/logs/bot.log
+          sudo grep -q "Discord rejected the bot token" /opt/twitchdiscordbot/logs/bot.log
+          systemctl show twitchdiscordbot -p User -p UnitFileState | tee /dev/stderr | grep -q "User=twitchbot"
+      - name: Upgrade in place, then uninstall
+        run: |
+          cd "$RUNNER_TEMP"/twitchdiscordbot-*/
+          sudo ./install.sh --yes --skip-check || true
+          sudo grep -q "ci-fake-token" /opt/twitchdiscordbot/.env
+          sudo /opt/twitchdiscordbot/install.sh --uninstall --purge
+          test ! -e /opt/twitchdiscordbot
+          test ! -e /etc/systemd/system/twitchdiscordbot.service
+          ! id twitchbot
+
+  # Same on Windows: scheduled task running as LOCAL SERVICE, installed with Windows PowerShell 5.1.
+  installer-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - name: PSScriptAnalyzer
+        shell: pwsh
+        run: |
+          Install-Module PSScriptAnalyzer -Force -Scope CurrentUser
+          # Write-Host is intended (coloured installer output); ShouldProcess makes no sense for an installer script.
+          $issues = Invoke-ScriptAnalyzer -Path packaging/windows/install.ps1, scripts/install-startup.ps1 `
+            -Severity Warning, Error -ExcludeRule PSAvoidUsingWriteHost, PSUseShouldProcessForStateChangingFunctions
+          $issues | Format-Table -AutoSize -Wrap RuleName, ScriptName, Line, Message
+          if ($issues) { exit 1 }
+      - name: Build release archives
+        run: python scripts/build_release.py --out dist
+      - name: Install (scheduled task)
+        shell: pwsh
+        run: |
+          Expand-Archive (Get-Item dist/twitchdiscordbot-*-windows.zip) -DestinationPath $env:RUNNER_TEMP
+          $src = (Get-ChildItem $env:RUNNER_TEMP -Directory -Filter 'twitchdiscordbot-*')[0].FullName
+          $env:DISCORD_TOKEN = 'ci-fake-token'; $env:TWITCH_APP_ID = 'ci'; $env:TWITCH_APP_SECRET = 'ci'
+          powershell -NoProfile -ExecutionPolicy Bypass -File "$src\install.ps1" -Yes -SkipCheck
+          "installer exit code: $LASTEXITCODE (non-zero expected: the bot can't log in with a fake token)"
+          $dir = "$env:ProgramData\TwitchDiscordBot"
+          $task = Get-ScheduledTask -TaskName TwitchDiscordBot
+          "task runs as: $($task.Principal.UserId)"
+          if ($task.Principal.UserId -notmatch 'LOCAL ?SERVICE') { throw 'task should run as LOCAL SERVICE' }
+          $readers = (Get-Acl "$dir\.env").Access.IdentityReference.Value
+          "'.env' readable by: $($readers -join ', ')"
+          if ($readers -match 'Users|Everyone') { throw '.env must not be readable by normal users' }
+          $log = "$dir\logs\bot.log"
+          foreach ($i in 1..30) {
+            if ((Test-Path $log) -and (Select-String -Quiet -Path $log -Pattern 'Discord rejected the bot token')) { break }
+            Start-Sleep -Seconds 2
+          }
+          Get-Content $log, "$dir\logs\console.log" -ErrorAction SilentlyContinue
+          if (-not (Select-String -Quiet -Path $log -Pattern 'Discord rejected the bot token')) { throw 'bot did not run' }
+          exit 0
+      - name: Upgrade in place, then uninstall
+        shell: pwsh
+        run: |
+          $src = (Get-ChildItem $env:RUNNER_TEMP -Directory -Filter 'twitchdiscordbot-*')[0].FullName
+          $dir = "$env:ProgramData\TwitchDiscordBot"
+          powershell -NoProfile -ExecutionPolicy Bypass -File "$src\install.ps1" -Yes -SkipCheck
+          if (-not (Select-String -Quiet -Path "$dir\.env" -Pattern 'ci-fake-token')) { throw 'settings lost on upgrade' }
+          powershell -NoProfile -ExecutionPolicy Bypass -File "$dir\install.ps1" -Uninstall -Purge
+          if (Get-ScheduledTask -TaskName TwitchDiscordBot -ErrorAction SilentlyContinue) { throw 'task not removed' }
+          if (Test-Path $dir) { throw 'install folder not removed' }
+          exit 0

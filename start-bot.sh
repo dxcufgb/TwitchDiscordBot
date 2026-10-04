@@ -61,13 +61,13 @@ export PYTHONUNBUFFERED=1
 
 if [[ "$WATCH" -eq 0 ]]; then
     log "Starting bot"
-    exec "$VENV_PY" Main.py
+    exec "$VENV_PY" "$BOT_DIR/Main.py"
 fi
 
 trap 'log "Stopping"; kill "${child:-}" 2>/dev/null || true; exit 0' INT TERM
 while true; do
     log "Starting bot"
-    "$VENV_PY" Main.py &
+    "$VENV_PY" "$BOT_DIR/Main.py" &
     child=$!
     set +e; wait "$child"; code=$?; set -e
     log "Bot exited with code $code, restarting in ${RESTART_DELAY}s"
