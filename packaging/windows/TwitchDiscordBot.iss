@@ -284,8 +284,8 @@ begin
   end;
   Log('install.ps1 exit code: ' + IntToStr(Code));
   if Code <> 0 then
-    MsgBox('TwitchDiscordBot was installed, but the bot did not start correctly. Last lines of the setup log:' +
-      #13#10#13#10 + ReadLines(ExpandConstant('{app}\logs\setup.log'), 12) + #13#10 +
+    MsgBox('TwitchDiscordBot was installed, but the bot did not start correctly. Last lines of the setup log:' + #13#10#13#10 +
+      ReadLines(ExpandConstant('{app}\logs\setup.log'), 12) + #13#10 +
       'Full log: ' + ExpandConstant('{app}\logs\setup.log') + #13#10 +
       'You can run this setup again to enter other credentials.', mbError, MB_OK);
 end;
