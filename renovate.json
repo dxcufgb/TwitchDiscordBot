@@ -3,7 +3,8 @@
   "extends": [
     "config:recommended",
     ":dependencyDashboard",
-    ":semanticCommitTypeAll(chore)"
+    ":semanticCommitTypeAll(chore)",
+    "helpers:pinGitHubActionDigests"
   ],
   "packageRules": [
     {
