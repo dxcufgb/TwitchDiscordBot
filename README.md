@@ -54,7 +54,8 @@ application first (steps 1–2 below).
 1. **Discord application** ([Developer Portal](https://discord.com/developers/applications)): create a bot
    and copy its token. On the same *Bot* page turn on **Server Members Intent** (under *Privileged Gateway
    Intents*): the bot needs it to find server admins for update notifications, and Discord refuses the
-   connection without it (the log then says how to fix it; `python Main.py --check` checks it too). Invite it
+   connection without it (the log then says how to fix it; `python Main.py --check` checks it too). It is not
+   requested when `UPDATE_NOTIFY` is `owner` or `off`. Invite it
    with the `bot` and `applications.commands` scopes and these permissions: *View Channels, Send Messages, Embed Links, Mention @everyone/@here/All Roles,
    Manage Roles*.
 2. **Twitch application** ([Twitch dev console](https://dev.twitch.tv/console/apps)): register an app and copy

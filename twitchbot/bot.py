@@ -65,8 +65,9 @@ class TwitchNotifierBot(discord.Client):
     def __init__(self, config: Config) -> None:
         intents = discord.Intents.none()
         intents.guilds = True  # guild/channel/role cache
-        # Privileged "Server Members Intent" (enable it in the Developer Portal): finds server admins for update DMs.
-        intents.members = True
+        # Privileged "Server Members Intent" (enable it in the Developer Portal): finds server admins for update
+        # DMs, so it is only requested when UPDATE_NOTIFY=admins.
+        intents.members = config.update_notify == "admins"
         super().__init__(intents=intents, allowed_mentions=discord.AllowedMentions.none())
         self.config = config
         self.tree = app_commands.CommandTree(self)

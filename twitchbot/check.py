@@ -122,7 +122,8 @@ async def run_checks(config: Config) -> list[CheckResult]:
         )
     )
     if results[0].ok:
-        results.append(await check_members_intent(config.discord_token))
+        if config.update_notify == "admins":
+            results.append(await check_members_intent(config.discord_token))
         results.append(await check_slash_commands(config.discord_token))
     return results
 

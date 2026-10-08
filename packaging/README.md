@@ -7,7 +7,8 @@ Posts an alert in Discord, and pings a per-stream role, when the Twitch channels
 1. **Discord bot** ([Developer Portal](https://discord.com/developers/applications)): create an application,
    add a bot, and copy its **token**. On the same *Bot* page, turn on **Server Members Intent** (*Privileged
    Gateway Intents*): the bot needs it to DM server admins about updates, and Discord refuses to connect the bot
-   without it (the installer's check and `logs/bot.log` tell you if it is off). Invite it to your server with the
+   without it (the installer's check and `logs/bot.log` tell you if it is off). Not needed when `UPDATE_NOTIFY`
+   is `owner` or `off`. Invite it to your server with the
    `bot` and `applications.commands` scopes and these permissions: *View Channels, Send Messages, Embed Links,
    Mention @everyone/@here/All Roles, Manage Roles*.
 2. **Twitch app** ([Twitch dev console](https://dev.twitch.tv/console/apps)): register an application

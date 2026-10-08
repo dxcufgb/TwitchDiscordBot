@@ -213,7 +213,7 @@ async def test_bot_announce_update_end_to_end(tmp_path, monkeypatch, mode, expec
         "tok", "id", "secret", tmp_path, tmp_path, "INFO", 60, None, None, tmp_path / ".env", {}, update_notify=mode
     )
     bot = TwitchNotifierBot(config)
-    assert bot.intents.members  # requested by default
+    assert bot.intents.members == (mode == "admins")  # only admins needs the privileged intent
     bot.store.bot_version = "1.0.0"
     write_notice(tmp_path, version=bot_module.__version__, body="- new stuff")
     users = {1: FakeUser(), 2: FakeUser(), 3: FakeUser()}
