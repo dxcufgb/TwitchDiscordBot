@@ -60,6 +60,9 @@ class FakeGitHub:
         ids = {name: 1, "SHA256SUMS.txt": 2, zname: 3}
         self.release = {
             "tag_name": f"v{version}",
+            "name": f"TwitchDiscordBot {version}",
+            "body": "## What's Changed\n- things",
+            "html_url": "https://github.com/dxcufgb/TwitchDiscordBot/releases/tag/v2.2.0",
             "draft": draft,
             "prerelease": prerelease,
             "assets": [{"name": n, "url": f"{API}/releases/assets/{ids[n]}"} for n in names],
@@ -183,6 +186,13 @@ def test_download_verifies_and_extracts(install, tmp_path, capsys):
     assert root == dest / "release" / "twitchdiscordbot-2.2.0"
     assert (root / "install.sh").is_file() and (root / "Main.py").is_file()
     assert not (dest / "download").exists()
+    notice = json.loads((dest / "update-notice.json").read_text())
+    assert notice == {
+        "version": "2.2.0",
+        "name": "TwitchDiscordBot 2.2.0",
+        "body": "## What's Changed\n- things",
+        "html_url": "https://github.com/dxcufgb/TwitchDiscordBot/releases/tag/v2.2.0",
+    }
 
 
 def test_windows_asset(install, tmp_path, capsys):

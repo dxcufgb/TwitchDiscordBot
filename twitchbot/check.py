@@ -53,6 +53,36 @@ async def check_twitch(app_id: str, app_secret: str) -> CheckResult:
     return CheckResult("Twitch app credentials", True, "app access token issued")
 
 
+MEMBERS_INTENT_FLAGS = (1 << 14) | (1 << 15)  # GATEWAY_GUILD_MEMBERS, GATEWAY_GUILD_MEMBERS_LIMITED
+
+
+def members_intent_result(flags: int) -> CheckResult:
+    name = "Server Members Intent"
+    if flags & MEMBERS_INTENT_FLAGS:
+        return CheckResult(name, True, "enabled")
+    return CheckResult(
+        name,
+        False,
+        "turned off, so Discord will refuse the connection. Turn it on: "
+        "https://discord.com/developers/applications -> your app -> Bot -> Privileged Gateway Intents",
+    )
+
+
+async def check_members_intent(token: str) -> CheckResult:
+    try:
+        timeout = aiohttp.ClientTimeout(total=20)
+        async with (
+            aiohttp.ClientSession(timeout=timeout, trust_env=True) as session,
+            session.get(f"{DISCORD_API}/applications/@me", headers={"Authorization": f"Bot {token}"}) as resp,
+        ):
+            if resp.status != 200:
+                return CheckResult("Server Members Intent", False, f"could not check (HTTP {resp.status})")
+            flags = int((await resp.json()).get("flags") or 0)
+    except (aiohttp.ClientError, asyncio.TimeoutError, ValueError, AttributeError) as exc:
+        return CheckResult("Server Members Intent", False, f"could not check ({type(exc).__name__})")
+    return members_intent_result(flags)
+
+
 async def check_slash_commands(token: str) -> CheckResult:
     """Informational: how many slash commands Discord has for the bot, plus the invite link with both scopes."""
     from .bot import invite_url
@@ -92,6 +122,7 @@ async def run_checks(config: Config) -> list[CheckResult]:
         )
     )
     if results[0].ok:
+        results.append(await check_members_intent(config.discord_token))
         results.append(await check_slash_commands(config.discord_token))
     return results
 

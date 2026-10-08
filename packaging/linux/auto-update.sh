@@ -74,6 +74,14 @@ main() {
 
     log "Backing up the current program files"
     backup_files "$work/backup"
+    # Release notes for the bot, which DMs them to server admins when the new version starts.
+    # Written before the installer restarts the bot, as the bot user (data/ belongs to it).
+    if [[ -f $work/new/update-notice.json && -d $PREFIX/data ]]; then
+        # shellcheck disable=SC2016  # $1 is expanded by the inner sh
+        as_bot sh -c 'cat >"$1.tmp" && chmod 640 "$1.tmp" && mv -f "$1.tmp" "$1"' sh \
+            "$PREFIX/data/update-notice.json" <"$work/new/update-notice.json" ||
+            log "Could not save the release notes for the update message"
+    fi
 
     local args=(--yes --skip-check --prefix "$PREFIX" --user "$BOT_USER")
     [[ -f $UNIT_FILE ]] || args+=(--no-service)
@@ -87,8 +95,13 @@ main() {
     fi
 
     log "The upgrade failed; restoring the previous version"
+    as_bot rm -f "$PREFIX/data/update-notice.json" || true
     restore_files "$work/backup"
     die "Upgrade failed and was rolled back to $(cat "$PREFIX/VERSION" 2>/dev/null || echo 'the previous version')."
+}
+
+as_bot() {
+    if command -v runuser >/dev/null 2>&1; then runuser -u "$BOT_USER" -- "$@"; else sudo -u "$BOT_USER" -- "$@"; fi
 }
 
 updater() {

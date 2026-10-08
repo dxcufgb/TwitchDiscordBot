@@ -19,6 +19,17 @@ try {
     $me = Invoke-RestMethod -Uri 'https://discord.com/api/v10/users/@me' -TimeoutSec 20 `
         -Headers @{ Authorization = "Bot $env:TDB_DISCORD_TOKEN" }
     $report.Add("Discord: OK (bot account $($me.username))")
+    # The bot needs the privileged Server Members Intent (application flags GATEWAY_GUILD_MEMBERS[_LIMITED]).
+    try {
+        $app = Invoke-RestMethod -Uri 'https://discord.com/api/v10/applications/@me' -TimeoutSec 20 `
+            -Headers @{ Authorization = "Bot $env:TDB_DISCORD_TOKEN" }
+        if (([long]$app.flags -band ((1 -shl 14) -bor (1 -shl 15))) -eq 0) {
+            $ok = $false
+            $report.Add('Discord: the "Server Members Intent" is off. Turn it on: Developer Portal -> your app -> Bot -> Privileged Gateway Intents.')
+        }
+    } catch {
+        $report.Add('Discord: could not check the Server Members Intent.')
+    }
 } catch {
     $ok = $false
     if ((Get-StatusCode $_) -eq 401) { $report.Add('Discord: the bot token was rejected.') }

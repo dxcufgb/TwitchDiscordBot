@@ -284,7 +284,7 @@ if (-not $Reconfigure) {
         $code = Join-Path $InstallDir 'twitchbot'
         if (Test-Path $code) { Remove-Item -Recurse -Force $code }
         Copy-Item -Recurse (Join-Path $SrcDir 'twitchbot') $InstallDir
-        foreach ($f in 'Main.py', 'requirements.txt', 'VERSION', '.env.example', 'start-bot.cmd', 'install.ps1',
+        foreach ($f in 'Main.py', 'requirements.txt', 'VERSION', 'CHANGES.md', '.env.example', 'start-bot.cmd', 'install.ps1',
                        'install.cmd', 'uninstall.cmd', 'auto-update.ps1', 'README.md') {
             $p = Join-Path $SrcDir $f
             if (Test-Path $p) { Copy-Item -Force $p $InstallDir }
@@ -347,6 +347,7 @@ function Set-Configuration {
     Write-Host ''
     Write-Host 'Credentials (input for secrets is hidden):'
     Write-Host '  * Discord bot token:  https://discord.com/developers/applications -> your app -> Bot -> Reset Token'
+    Write-Host '    On the same Bot page, turn on "Server Members Intent" (Privileged Gateway Intents); the bot needs it.'
     Write-Host '  * Twitch Client ID and secret: https://dev.twitch.tv/console/apps -> your app -> Manage'
     $values = [ordered]@{
         DISCORD_TOKEN     = Read-Value 'DISCORD_TOKEN' 'Discord bot token' $true $true

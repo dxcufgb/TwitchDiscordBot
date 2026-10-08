@@ -27,3 +27,12 @@ def test_print_results(capsys):
     assert print_results([CheckResult("a", True, "fine")])
     assert not print_results([CheckResult("a", True, "x"), CheckResult("b", False, "bad")])
     assert "[FAIL] b: bad" in capsys.readouterr().out
+
+
+def test_members_intent_flags():
+    from twitchbot.check import members_intent_result
+
+    assert members_intent_result(1 << 14).ok
+    assert members_intent_result(1 << 15).ok  # "limited" (unverified bots under 100 servers)
+    result = members_intent_result(1 << 23)
+    assert not result.ok and "Privileged Gateway Intents" in result.detail

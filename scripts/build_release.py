@@ -8,6 +8,9 @@ Creates in ``dist/``:
     twitchdiscordbot-<version>-windows.zip
     SHA256SUMS.txt
     RELEASE_NOTES.md
+
+Both archives also contain CHANGES.md: the commits since the previous v* tag (needs the git history and
+tags, as in the release workflow). The bot sends it to server admins after a manual upgrade.
 """
 
 from __future__ import annotations
@@ -76,6 +79,27 @@ def source_date_epoch() -> int:
         return int(out.stdout.strip())
     except (OSError, subprocess.CalledProcessError, ValueError):
         return 315532800  # 1980-01-01, the earliest time a zip file can store
+
+
+def git(*args: str) -> str | None:
+    try:
+        out = subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True, check=True)
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    return out.stdout
+
+
+def changes(version: str) -> str:
+    """CHANGES.md: one line per commit since the previous release tag (or a link if git can't tell)."""
+    header = f"# TwitchDiscordBot {version}\n\n"
+    link = f"Release notes: https://github.com/dxcufgb/TwitchDiscordBot/releases/tag/v{version}\n"
+    previous = git("describe", "--tags", "--abbrev=0", "--match", "v[0-9]*", "--exclude", f"v{version}", "HEAD")
+    if not previous or not previous.strip():
+        return header + link
+    log = git("log", "--no-merges", "--format=- %s", f"{previous.strip()}..HEAD")
+    if not log or not log.strip():
+        return header + link
+    return header + f"Changes since {previous.strip()}:\n\n" + log.strip() + "\n\n" + link
 
 
 def read_source(rel: str, *, crlf: bool) -> bytes:
@@ -153,7 +177,7 @@ def main() -> int:
     out.mkdir(parents=True, exist_ok=True)
     prefix = f"{NAME}-{version}"
     mtime = source_date_epoch()
-    extra = {"VERSION": f"{version}\n".encode()}
+    extra = {"VERSION": f"{version}\n".encode(), "CHANGES.md": changes(version).encode()}
     common = package_files()
 
     linux = out / f"{prefix}-linux.tar.gz"

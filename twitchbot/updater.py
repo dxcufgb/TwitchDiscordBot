@@ -8,7 +8,8 @@ own virtual environment, as a script and in isolated mode::
 
 ``check`` only reports. ``download`` fetches the platform's release archive and ``SHA256SUMS.txt``,
 verifies the checksum, extracts the archive into ``--dest`` and prints the extracted release folder on
-the last line of standard output; the wrapper then runs that folder's installer in upgrade mode.
+the last line of standard output, and writes the release notes to ``--dest``/update-notice.json; the
+wrapper copies that notice into the bot's data folder and runs the release's installer in upgrade mode.
 
 Exit codes: 0 = a newer release is available (and, for ``download``, ready), 3 = already up to date,
 1 = error. Standard library only: this file must not import the rest of the bot.
@@ -49,6 +50,8 @@ TIMEOUT = 60
 MAX_JSON_BYTES = 5 * 1024 * 1024
 MAX_ASSET_BYTES = 200 * 1024 * 1024
 MAX_REDIRECTS = 5
+MAX_NOTES_CHARS = 100_000
+NOTICE_FILE = "update-notice.json"
 CHUNK = 64 * 1024
 
 EXIT_OK = 0
@@ -226,6 +229,9 @@ class Release:
     tag: str
     version: str
     assets: dict[str, str]  # asset name -> API download URL
+    name: str = ""
+    body: str = ""  # release notes (Markdown)
+    html_url: str = ""
 
 
 def latest_release(gh: GitHub) -> Release | None:
@@ -242,7 +248,14 @@ def latest_release(gh: GitHub) -> Release | None:
     for asset in data.get("assets") or []:
         if isinstance(asset, dict) and asset.get("name") and asset.get("url"):
             assets[str(asset["name"])] = str(asset["url"])
-    return Release(tag=tag, version=tag.removeprefix("v"), assets=assets)
+    return Release(
+        tag=tag,
+        version=tag.removeprefix("v"),
+        assets=assets,
+        name=str(data.get("name") or ""),
+        body=str(data.get("body") or "")[:MAX_NOTES_CHARS],
+        html_url=str(data.get("html_url") or ""),
+    )
 
 
 def asset_name(version: str, platform: str) -> str:
@@ -347,7 +360,20 @@ def download_release(gh: GitHub, release: Release, platform: str, dest: Path) ->
     if not installer.is_file():
         raise UpdateError(f"The release archive has no {installer.name}")
     shutil.rmtree(downloads, ignore_errors=True)
+    write_notice(release, dest / NOTICE_FILE)
     return root
+
+
+def write_notice(release: Release, path: Path) -> None:
+    """Release notes for the bot, which DMs server admins about the update (no secrets in here).
+
+    The wrapper copies it to the bot's ``data/`` folder before running the installer.
+    """
+    url = release.html_url
+    if not url.startswith(f"https://github.com/{REPO}/"):
+        url = f"https://github.com/{REPO}/releases/tag/{release.tag}"
+    notice = {"version": release.version, "name": release.name, "body": release.body, "html_url": url}
+    path.write_text(json.dumps(notice, indent=2), encoding="utf-8")
 
 
 def default_platform() -> str:

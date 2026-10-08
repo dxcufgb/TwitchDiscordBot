@@ -93,6 +93,23 @@ function Update-Bot([bool]$CheckOnly) {
         New-Item -ItemType Directory -Path $backup | Out-Null
         Get-ProgramItem | ForEach-Object { Copy-Item -Recurse -Force $_.FullName $backup }
 
+        # Release notes for the bot, which DMs them to server admins when the new version starts. Written before the
+        # installer restarts the bot: to a new, unique file (data\ is writable by the bot's account), then renamed.
+        $notice = Join-Path $work 'new\update-notice.json'
+        $noticeDest = Join-Path $InstallDir 'data\update-notice.json'
+        if (Test-Path $notice) {
+            try {
+                $tmp = Join-Path $InstallDir ('data\.update-notice-' + [Guid]::NewGuid().ToString('N') + '.tmp')
+                $bytes = [IO.File]::ReadAllBytes($notice)
+                $stream = [IO.File]::Open($tmp, 'CreateNew', 'Write', 'None')
+                try { $stream.Write($bytes, 0, $bytes.Length) } finally { $stream.Dispose() }
+                if (Test-Path $noticeDest) { [IO.File]::Delete($noticeDest) }
+                [IO.File]::Move($tmp, $noticeDest)
+            } catch {
+                Write-UpdateLog "Could not save the release notes for the update message: $($_.Exception.Message)"
+            }
+        }
+
         Write-UpdateLog "Installing TwitchDiscordBot $newVersion"
         # The release's installer upgrades in place, keeps settings, data, this auto-update setting and the token,
         # and exits non-zero if the bot does not stay up.
@@ -131,6 +148,7 @@ function Update-Bot([bool]$CheckOnly) {
 
         Write-UpdateLog "The upgrade failed (exit code $($p.ExitCode)); restoring the previous version"
         Stop-Bot
+        Remove-Item -Force $noticeDest -ErrorAction SilentlyContinue
         Get-ProgramItem | Remove-Item -Recurse -Force
         Get-ChildItem -Force $backup | ForEach-Object { Copy-Item -Recurse -Force $_.FullName $InstallDir }
         if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) { Start-ScheduledTask -TaskName $TaskName }

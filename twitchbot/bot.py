@@ -17,9 +17,17 @@ from twitchAPI.object.api import TwitchUser
 from twitchAPI.twitch import Twitch
 
 from . import __version__
-from .config import Config, ConfigError, load_config
+from .config import BASE_DIR, Config, ConfigError, load_config
 from .notify import Announcement, LiveInfo, chunked, plan_announcements
 from .storage import StateStore, TrackedStream, migrate_legacy
+from .update_notify import (
+    build_update_embed,
+    bundled_notes,
+    collect_recipients,
+    record_version,
+    send_update_dms,
+    take_notice,
+)
 
 log = logging.getLogger("twitchbot")
 
@@ -38,6 +46,12 @@ def invite_url(application_id: int) -> str:
     return discord.utils.oauth_url(application_id, permissions=BOT_PERMISSIONS, scopes=("bot", "applications.commands"))
 
 
+MEMBERS_INTENT_HELP = (
+    'Discord refused the connection because the bot\'s "Server Members Intent" is turned off. Turn it on: '
+    "https://discord.com/developers/applications -> your app -> Bot -> Privileged Gateway Intents -> "
+    "Server Members Intent, save, then start the bot again."
+)
+
 COMMANDS_NOT_AUTHORIZED = (
     "**My slash commands aren't enabled in this server**, so `/setup`, `/stream` and the others don't show up. "
     "This happens when the bot was invited without the `applications.commands` permission (common for bots "
@@ -50,7 +64,9 @@ COMMANDS_NOT_AUTHORIZED = (
 class TwitchNotifierBot(discord.Client):
     def __init__(self, config: Config) -> None:
         intents = discord.Intents.none()
-        intents.guilds = True  # guild/channel/role cache; no privileged intents needed
+        intents.guilds = True  # guild/channel/role cache
+        # Privileged "Server Members Intent" (enable it in the Developer Portal): finds server admins for update DMs.
+        intents.members = True
         super().__init__(intents=intents, allowed_mentions=discord.AllowedMentions.none())
         self.config = config
         self.tree = app_commands.CommandTree(self)
@@ -59,6 +75,8 @@ class TwitchNotifierBot(discord.Client):
         self.exit_code = 0
         self._warned_unknown: set[str] = set()
         self._checked_command_access = False
+        self._update_check_started = False
+        self._background: set[asyncio.Task] = set()
         self.poll_streams.change_interval(seconds=config.poll_interval)
 
     # ---- lifecycle ----------------------------------------------------
@@ -111,11 +129,41 @@ class TwitchNotifierBot(discord.Client):
             __version__,
             len(self.guilds),
         )
-        # on_ready fires again after reconnects; one check per process is enough.
+        # on_ready fires again after reconnects; once per process is enough for both checks.
+        if not self._update_check_started:
+            self._update_check_started = True
+            task = asyncio.create_task(self.announce_update())
+            self._background.add(task)
+            task.add_done_callback(self._background.discard)
         if not self._checked_command_access:
             self._checked_command_access = True
             for guild in list(self.guilds):
                 await self.check_command_access(guild)
+
+    async def announce_update(self) -> None:
+        """DM server admins once after the bot was updated (see update_notify). Never raises."""
+        try:
+            notice = take_notice(self.config.data_dir, __version__)  # always consume the notice file
+            previous = record_version(self.store, __version__)
+            if previous is None:
+                return
+            log.info("Bot updated from %s to %s", previous, __version__)
+            mode = self.config.update_notify
+            if mode == "off":
+                return
+            include_admins = mode == "admins"
+            notes = notice or bundled_notes(BASE_DIR, __version__)
+            recipients = collect_recipients(self.guilds, include_admins)
+
+            async def get_user(user_id: int) -> discord.abc.User:
+                return self.get_user(user_id) or await self.fetch_user(user_id)
+
+            sent = await send_update_dms(
+                recipients, get_user, lambda servers: build_update_embed(__version__, notes, servers)
+            )
+            log.info("Sent the update notice to %d of %d server admin(s)", sent, len(recipients))
+        except Exception:
+            log.exception("Could not send the update notice")
 
     async def check_command_access(self, guild: discord.Guild) -> bool:
         """Return False (and tell the server once) if the bot may not use slash commands there.
@@ -379,5 +427,8 @@ def main(argv: list[str] | None = None) -> int:
         bot.run(config.discord_token, log_handler=None)
     except discord.LoginFailure:
         log.critical("Discord rejected the bot token; check DISCORD_TOKEN in %s", config.env_file)
+        return 2
+    except discord.PrivilegedIntentsRequired:
+        log.critical(MEMBERS_INTENT_HELP)
         return 2
     return bot.exit_code

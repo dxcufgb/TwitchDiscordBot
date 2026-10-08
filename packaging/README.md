@@ -5,7 +5,9 @@ Posts an alert in Discord, and pings a per-stream role, when the Twitch channels
 ## Before you install
 
 1. **Discord bot** ([Developer Portal](https://discord.com/developers/applications)): create an application,
-   add a bot, and copy its **token**. No privileged intents are needed. Invite it to your server with the
+   add a bot, and copy its **token**. On the same *Bot* page, turn on **Server Members Intent** (*Privileged
+   Gateway Intents*): the bot needs it to DM server admins about updates, and Discord refuses to connect the bot
+   without it (the installer's check and `logs/bot.log` tell you if it is off). Invite it to your server with the
    `bot` and `applications.commands` scopes and these permissions: *View Channels, Send Messages, Embed Links,
    Mention @everyone/@here/All Roles, Manage Roles*.
 2. **Twitch app** ([Twitch dev console](https://dev.twitch.tv/console/apps)): register an application
@@ -60,6 +62,15 @@ install, set `DISCORD_TOKEN`, `TWITCH_APP_ID` and `TWITCH_APP_SECRET` in the env
 | Change credentials | Run the setup wizard again, or `C:\ProgramData\TwitchDiscordBot\install.cmd -Reconfigure` |
 | Upgrade | Run the newer setup wizard, or `install.cmd` from the newer release folder |
 | Uninstall | *Apps & features* (setup wizard), or `C:\ProgramData\TwitchDiscordBot\uninstall.cmd` (zip; add `-Purge` to delete settings and data) |
+
+## Update notifications
+
+When the bot starts a newer version than before (after an automatic or a manual upgrade), it sends one DM to
+each server owner and administrator, listing the servers it applies to, with the release notes: from GitHub
+when the auto-updater installed it, otherwise from `CHANGES.md` in the release archive (just the version and
+a link if neither is available). It happens once per version; the first start after installing only records
+the version. People with DMs closed are skipped. Set `UPDATE_NOTIFY` in `.env` to `admins` (default),
+`owner` (server owners only) or `off`.
 
 ## Automatic updates
 

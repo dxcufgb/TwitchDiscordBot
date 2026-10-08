@@ -86,6 +86,7 @@ Type: filesandordirs; Name: "{app}\twitchbot"
 ; Automatic updates: settings and the GitHub token (always removed, the token is a secret).
 Type: filesandordirs; Name: "{app}\updater"
 Type: files; Name: "{app}\VERSION"
+Type: files; Name: "{app}\CHANGES.md"
 
 [Code]
 var
@@ -149,6 +150,7 @@ var
 begin
   HadConfig := FileExists(ConfigFile);
   Intro := 'Discord bot token: https://discord.com/developers/applications -> your app -> Bot -> Reset Token.' + #13#10 +
+    'On the same Bot page, turn on "Server Members Intent" (Privileged Gateway Intents); the bot needs it.' + #13#10 +
     'Twitch Client ID and secret: https://dev.twitch.tv/console/apps -> your app -> Manage.' + #13#10#13#10 +
     'The values are checked with Discord and Twitch when you click Next.';
   if HadConfig then

@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parent.parent
 from twitchbot import __version__  # noqa: E402
 
 CODE = {f"twitchbot/{p.name}" for p in (ROOT / "twitchbot").glob("*.py")}
-COMMON = CODE | {"Main.py", "requirements.txt", ".env.example", "README.md", "VERSION"}
+COMMON = CODE | {"Main.py", "requirements.txt", ".env.example", "README.md", "VERSION", "CHANGES.md"}
 
 
 def build(tmp_path):
@@ -37,6 +37,7 @@ def test_archive_contents(tmp_path):
         assert members["Main.py"].mode == 0o644
         assert b"\r\n" not in tar.extractfile(members["install.sh"]).read()
         assert tar.extractfile(members["VERSION"]).read().decode().strip() == __version__
+        assert tar.extractfile(members["CHANGES.md"]).read().decode().startswith(f"# TwitchDiscordBot {__version__}\n")
 
     with zipfile.ZipFile(windows) as zf:
         names = {n.removeprefix(prefix + "/") for n in zf.namelist()}

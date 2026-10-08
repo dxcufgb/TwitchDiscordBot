@@ -328,7 +328,7 @@ if [[ $ACTION == install ]]; then
         info "Installing $(cat "$SRC_DIR/VERSION" 2>/dev/null || echo 'files') into $PREFIX"
         rm -rf "$PREFIX/twitchbot"
         cp -R "$SRC_DIR/twitchbot" "$PREFIX/"
-        for f in Main.py requirements.txt VERSION .env.example start-bot.sh install.sh README.md; do
+        for f in Main.py requirements.txt VERSION CHANGES.md .env.example start-bot.sh install.sh README.md; do
             [[ -e $SRC_DIR/$f ]] && cp "$SRC_DIR/$f" "$PREFIX/$f"
         done
         if [[ -e $SRC_DIR/auto-update.sh ]]; then
@@ -430,6 +430,7 @@ configure() {
 
 Credentials (input for secrets is hidden):
   * Discord bot token:  https://discord.com/developers/applications -> your app -> Bot -> Reset Token
+    On the same Bot page, turn on "Server Members Intent" (Privileged Gateway Intents); the bot needs it.
   * Twitch Client ID and secret: https://dev.twitch.tv/console/apps -> your app -> Manage
 TXT
     ask DISCORD_TOKEN "Discord bot token" 1 1

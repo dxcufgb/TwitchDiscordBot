@@ -52,8 +52,10 @@ application first (steps 1–2 below).
 ## Setup from source
 
 1. **Discord application** ([Developer Portal](https://discord.com/developers/applications)): create a bot
-   and copy its token. No privileged intents are needed. Invite it with the `bot` and `applications.commands`
-   scopes and these permissions: *View Channels, Send Messages, Embed Links, Mention @everyone/@here/All Roles,
+   and copy its token. On the same *Bot* page turn on **Server Members Intent** (under *Privileged Gateway
+   Intents*): the bot needs it to find server admins for update notifications, and Discord refuses the
+   connection without it (the log then says how to fix it; `python Main.py --check` checks it too). Invite it
+   with the `bot` and `applications.commands` scopes and these permissions: *View Channels, Send Messages, Embed Links, Mention @everyone/@here/All Roles,
    Manage Roles*.
 2. **Twitch application** ([Twitch dev console](https://dev.twitch.tv/console/apps)): register an app and copy
    its Client ID and secret.
@@ -90,12 +92,22 @@ powershell -ExecutionPolicy Bypass -File .\scripts\install-startup.ps1 -AtLogon 
 powershell -ExecutionPolicy Bypass -File .\scripts\install-startup.ps1 -Uninstall
 ```
 
+## Update notifications (DMs to server admins)
+
+When the bot starts a newer version than before (after an automatic or a manual upgrade), it sends one DM to
+each server owner and administrator, listing the servers it applies to, with the release notes: from GitHub
+when the auto-updater installed it, otherwise from `CHANGES.md` in the release archive (just the version and
+a link if neither is available). It happens once per version; the first start after installing only records
+the version. People with DMs closed are skipped. Set `UPDATE_NOTIFY` in `.env` to `admins` (default),
+`owner` (server owners only) or `off`.
+
 ## Files
 
 | Path | Contents |
 |---|---|
 | `.env` | Secrets and settings (see `.env.example`) |
-| `data/state.json` | Alert channels, tracked streams, filters and roles per server (written atomically) |
+| `data/state.json` | Alert channels, tracked streams, filters and roles per server, and the last bot version that ran (written atomically) |
+| `data/update-notice.json` | Release notes left by the auto-updater for the update DM; deleted once read |
 | `logs/bot.log` | Rotating log (5 × 2 MB) |
 | `updater/github-token` | Only with automatic updates: the GitHub token (root / Administrators+SYSTEM only) |
 
