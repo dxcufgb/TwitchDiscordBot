@@ -6,6 +6,8 @@
 #   sudo ./install.sh --reconfigure   enter new credentials and restart
 #   sudo ./install.sh --uninstall     remove the service and program files (keeps .env, data/, logs/)
 #   sudo ./install.sh --uninstall --purge   also delete settings, data, logs and the service user
+#   sudo ./install.sh --enable-auto-update    turn on daily automatic updates (asks for a GitHub token)
+#   sudo ./install.sh --disable-auto-update   turn them off and delete the stored token
 #
 # Options:
 #   --prefix DIR    install location            (default /opt/twitchdiscordbot)
@@ -14,6 +16,8 @@
 #   --skip-check    don't verify the credentials against Discord/Twitch
 #   --yes           never prompt: install missing packages, take credentials from the environment
 #                   (DISCORD_TOKEN, TWITCH_APP_ID, TWITCH_APP_SECRET, optional OWNER_ID)
+#   --auto-update   also turn on automatic updates; the GitHub token comes from UPDATE_GITHUB_TOKEN or a prompt
+#   --no-auto-update  turn automatic updates off (by default an upgrade keeps the current choice)
 #
 # After installing, the installer is also available as $PREFIX/install.sh.
 set -euo pipefail
@@ -26,9 +30,10 @@ PURGE=0
 SERVICE_ON=1
 SKIP_CHECK=0
 ASSUME_YES=0
+AUTO_UPDATE=""  # "" = keep the current choice, 1 = turn on, 0 = turn off
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-usage() { sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+usage() { awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "${BASH_SOURCE[0]}"; }
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -40,6 +45,10 @@ while [[ $# -gt 0 ]]; do
         --no-service) SERVICE_ON=0 ;;
         --skip-check) SKIP_CHECK=1 ;;
         --yes|-y) ASSUME_YES=1 ;;
+        --auto-update) AUTO_UPDATE=1 ;;
+        --no-auto-update) AUTO_UPDATE=0 ;;
+        --enable-auto-update) ACTION=enable-update ;;
+        --disable-auto-update) ACTION=disable-update ;;
         -h|--help) usage; exit 0 ;;
         *) echo "Unknown option: $1 (see --help)" >&2; exit 2 ;;
     esac
@@ -48,6 +57,10 @@ done
 PREFIX="${PREFIX%/}"
 UNIT_FILE="/etc/systemd/system/${SERVICE}.service"
 VENV_PY="$PREFIX/.venv/bin/python"
+UPDATE_UNIT="/etc/systemd/system/${SERVICE}-update.service"
+UPDATE_TIMER="/etc/systemd/system/${SERVICE}-update.timer"
+UPDATER_DIR="$PREFIX/updater"
+TOKEN_FILE="$UPDATER_DIR/github-token"
 
 info() { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33mWarning:\033[0m %s\n' "$*" >&2; }
@@ -60,6 +73,13 @@ confirm() {  # confirm "question" -> 0 for yes
     [[ -z "$reply" || "$reply" =~ ^[Yy] ]]
 }
 
+confirm_no() {  # confirm_no "question" -> 0 for yes; default no, and no when not interactive
+    [[ $ASSUME_YES -eq 1 ]] && return 1
+    local reply
+    read -r -p "$1 [y/N] " reply </dev/tty || return 1
+    [[ "$reply" =~ ^[Yy] ]]
+}
+
 as_bot() {
     if command -v runuser >/dev/null 2>&1; then runuser -u "$BOT_USER" -- "$@"; else sudo -u "$BOT_USER" -- "$@"; fi
 }
@@ -68,8 +88,139 @@ has_systemd() { command -v systemctl >/dev/null 2>&1 && [[ -d /run/systemd/syste
 
 [[ $EUID -eq 0 ]] || die "Please run as root: sudo $0 $*"
 
+# ---------------------------------------------------------------- automatic updates (opt-in)
+# A systemd timer runs $PREFIX/auto-update.sh daily as root. The repository is private, so it needs a GitHub
+# token; it is kept in $TOKEN_FILE (root only, mode 600), separate from the bot's .env.
+auto_update_enabled() { [[ -f $UPDATE_TIMER ]]; }
+
+save_update_token() {
+    local token="${UPDATE_GITHUB_TOKEN:-}" tmp
+    if [[ -z $token && -s $TOKEN_FILE ]] && { [[ $ASSUME_YES -eq 1 ]] || ! confirm_no "Replace the stored GitHub token?"; }; then
+        info "Keeping the stored GitHub token"
+        return 0
+    fi
+    if [[ -z $token ]]; then
+        [[ $ASSUME_YES -eq 0 ]] || die "Set UPDATE_GITHUB_TOKEN in the environment to turn on automatic updates with --yes."
+        cat <<'TXT'
+
+Automatic updates download new releases from the private GitHub repository dxcufgb/TwitchDiscordBot,
+so they need a GitHub token (input is hidden). Create one at https://github.com/settings/personal-access-tokens:
+Fine-grained token -> Resource owner dxcufgb -> Only select repositories: TwitchDiscordBot ->
+Repository permissions: Contents = Read-only (nothing else). Pick an expiry date you will remember.
+TXT
+        read -r -s -p "GitHub token: " token </dev/tty || true; echo
+        token="${token#"${token%%[![:space:]]*}"}"; token="${token%"${token##*[![:space:]]}"}"
+        [[ -n $token ]] || die "A GitHub token is required for automatic updates."
+    fi
+    [[ $token =~ ^[A-Za-z0-9_]+$ ]] || die "That does not look like a GitHub token (letters, digits and _ only)."
+    install -d -m 700 -o root -g root "$UPDATER_DIR"
+    tmp="$(mktemp "$UPDATER_DIR/.github-token.XXXXXX")"
+    printf '%s\n' "$token" >"$tmp"  # printf is a builtin: the token never appears in a process list
+    chown root:root "$tmp"
+    chmod 600 "$tmp"
+    mv -f "$tmp" "$TOKEN_FILE"
+    info "Saved the GitHub token in $TOKEN_FILE (readable by root only)"
+}
+
+secure_updater_dir() {
+    [[ -d $UPDATER_DIR ]] || return 0
+    chown -R root:root "$UPDATER_DIR"
+    chmod 700 "$UPDATER_DIR"
+    [[ ! -f $TOKEN_FILE ]] || chmod 600 "$TOKEN_FILE"
+}
+
+write_update_units() {
+    local bot_user=$BOT_USER
+    if [[ -f $UNIT_FILE ]]; then bot_user="$(sed -n 's/^User=//p' "$UNIT_FILE" | head -n1)"; bot_user="${bot_user:-$BOT_USER}"; fi
+    cat >"$UPDATE_UNIT" <<UNIT
+[Unit]
+Description=TwitchDiscordBot - install new releases (automatic updates)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+# Root, because it runs the release's install.sh. Logs: journalctl -u ${SERVICE}-update
+ExecStart=${PREFIX}/auto-update.sh --user ${bot_user}
+TimeoutStartSec=30min
+Environment=PIP_NO_CACHE_DIR=1
+UMask=0022
+
+# Hardening: it only needs to write the install folder and the systemd unit files.
+NoNewPrivileges=yes
+ProtectSystem=full
+ReadWritePaths=${PREFIX} /etc/systemd/system
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+UNIT
+    cat >"$UPDATE_TIMER" <<UNIT
+[Unit]
+Description=Daily check for TwitchDiscordBot updates
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=4h
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+UNIT
+    systemctl daemon-reload
+    systemctl enable --now "${SERVICE}-update.timer" >/dev/null 2>&1
+}
+
+enable_auto_update() {
+    has_systemd || die "Automatic updates need systemd."
+    [[ -x $PREFIX/auto-update.sh ]] || die "$PREFIX has no auto-update.sh; install this release first (sudo ./install.sh --auto-update)."
+    save_update_token
+    secure_updater_dir
+    write_update_units
+    info "Automatic updates are on: a newer release is installed daily (check now: sudo $PREFIX/auto-update.sh --check)."
+}
+
+disable_auto_update() {
+    if has_systemd && { [[ -f $UPDATE_TIMER ]] || [[ -f $UPDATE_UNIT ]]; }; then
+        systemctl disable --now "${SERVICE}-update.timer" >/dev/null 2>&1 || true
+        rm -f "$UPDATE_TIMER" "$UPDATE_UNIT"
+        systemctl daemon-reload
+    fi
+    rm -f "$UPDATE_TIMER" "$UPDATE_UNIT"
+    rm -rf "$UPDATER_DIR"
+}
+
+if [[ $ACTION == enable-update || $AUTO_UPDATE == 1 ]]; then
+    has_systemd || die "Automatic updates need systemd."
+    if [[ $ASSUME_YES -eq 1 && -z ${UPDATE_GITHUB_TOKEN:-} && ! -s $TOKEN_FILE ]]; then
+        die "Set UPDATE_GITHUB_TOKEN in the environment to turn on automatic updates with --yes."
+    fi
+fi
+if [[ $ACTION == enable-update ]]; then
+    [[ -x $VENV_PY && -f $PREFIX/Main.py ]] || die "TwitchDiscordBot is not installed in $PREFIX."
+    enable_auto_update
+    exit 0
+fi
+if [[ $ACTION == disable-update ]]; then
+    disable_auto_update
+    info "Automatic updates are off and the GitHub token was deleted."
+    exit 0
+fi
+
 # ---------------------------------------------------------------- uninstall
 if [[ $ACTION == uninstall ]]; then
+    if auto_update_enabled || [[ -f $UPDATE_UNIT || -d $UPDATER_DIR ]]; then
+        info "Removing automatic updates and the stored GitHub token"
+        disable_auto_update
+    fi
     if has_systemd && [[ -f $UNIT_FILE ]]; then
         info "Stopping and removing the $SERVICE service"
         systemctl disable --now "$SERVICE" 2>/dev/null || true
@@ -155,6 +306,12 @@ info "Using $("$PY" --version) at $PY"
 if [[ $ACTION == install ]]; then
     [[ -f $SRC_DIR/Main.py && -d $SRC_DIR/twitchbot ]] || die "Run this script from the extracted release folder."
 
+    # Ask once, on a fresh interactive install; upgrades keep whatever was chosen before.
+    if [[ -z $AUTO_UPDATE && ! -f $PREFIX/Main.py && $ASSUME_YES -eq 0 ]] && has_systemd &&
+        confirm_no "Install new releases automatically (daily; needs a read-only GitHub token)?"; then
+        AUTO_UPDATE=1
+    fi
+
     if ! id "$BOT_USER" >/dev/null 2>&1; then
         info "Creating system user $BOT_USER"
         useradd --system --home-dir "$PREFIX" --no-create-home \
@@ -174,8 +331,13 @@ if [[ $ACTION == install ]]; then
         for f in Main.py requirements.txt VERSION .env.example start-bot.sh install.sh README.md; do
             [[ -e $SRC_DIR/$f ]] && cp "$SRC_DIR/$f" "$PREFIX/$f"
         done
+        if [[ -e $SRC_DIR/auto-update.sh ]]; then
+            # Replace it with a new file (not in place): the updater may be running this very script.
+            cp "$SRC_DIR/auto-update.sh" "$PREFIX/.auto-update.sh.new"
+            mv -f "$PREFIX/.auto-update.sh.new" "$PREFIX/auto-update.sh"
+        fi
         chown -R root:root "$PREFIX/twitchbot"
-        chmod 755 "$PREFIX/install.sh" "$PREFIX/start-bot.sh" 2>/dev/null || true
+        chmod 755 "$PREFIX/install.sh" "$PREFIX/start-bot.sh" "$PREFIX/auto-update.sh" 2>/dev/null || true
     fi
     install -d -m 750 -o "$BOT_USER" -g "$BOT_USER" "$PREFIX/data" "$PREFIX/logs"
 
@@ -305,6 +467,24 @@ if [[ $SKIP_CHECK -eq 0 ]]; then
     done
 fi
 
+# ---------------------------------------------------------------- automatic updates
+if [[ $AUTO_UPDATE == 1 ]]; then
+    enable_auto_update
+elif [[ $AUTO_UPDATE == 0 ]]; then
+    if auto_update_enabled || [[ -d $UPDATER_DIR ]]; then
+        disable_auto_update
+        info "Automatic updates are off and the GitHub token was deleted."
+    fi
+elif auto_update_enabled && has_systemd; then
+    if [[ -s $TOKEN_FILE ]]; then
+        secure_updater_dir
+        write_update_units  # refresh the units; the choice and the token stay as they are
+        info "Keeping automatic updates on (turn off: sudo $PREFIX/install.sh --disable-auto-update)"
+    else
+        warn "Automatic updates are on but $TOKEN_FILE is missing; run: sudo $PREFIX/install.sh --enable-auto-update"
+    fi
+fi
+
 # ---------------------------------------------------------------- service
 if [[ $SERVICE_ON -eq 0 ]] || ! has_systemd; then
     [[ $SERVICE_ON -eq 1 ]] && warn "systemd was not found, so no service was installed."
@@ -369,6 +549,7 @@ cat <<TXT
   Change creds:  sudo $PREFIX/install.sh --reconfigure
   Upgrade:       run install.sh from a newer release folder
   Uninstall:     sudo $PREFIX/install.sh --uninstall [--purge]
+  Auto-update:   sudo $PREFIX/install.sh --enable-auto-update | --disable-auto-update
 
 Next, in Discord: /setup channel, then /stream add <twitch name>.
 TXT

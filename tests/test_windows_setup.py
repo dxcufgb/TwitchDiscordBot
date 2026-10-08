@@ -41,3 +41,54 @@ def test_plain_msgbox_only_in_interactive_code():
             current = header.group(1)
         if re.search(r"(?<!Suppressible)MsgBox\(", line):
             assert current in allowed, f"line {number}: plain MsgBox in {current}; use SuppressibleMsgBox"
+
+
+WINDOWS = ISS.parent
+INSTALL_PS1 = WINDOWS / "install.ps1"
+AUTO_UPDATE_PS1 = WINDOWS / "auto-update.ps1"
+
+
+def test_auto_update_task_is_opt_in():
+    text = ISS.read_text(encoding="ascii")
+    task = re.search(r'^Name: "autoupdate";.*$', text, re.M)
+    assert task and "Flags: unchecked" in task.group(0)
+    assert re.search(r"^UsePreviousTasks=no", text, re.M)
+    assert 'Source: "auto-update.ps1"' in text
+
+
+def test_update_token_goes_through_the_environment():
+    # The token must never be on a command line (visible in process lists and logs).
+    text = ISS.read_text(encoding="ascii")
+    assert "SetEnvironmentVariable('UPDATE_GITHUB_TOKEN'" in text
+    assert "UnsetEnvironmentVariable('UPDATE_GITHUB_TOKEN'" in text
+    for line in text.splitlines():
+        if "Exec(" in line or "RunInstallScript(" in line:
+            assert "TokenPage" not in line and "UPDATE_GITHUB_TOKEN" not in line, line
+    # install.ps1 reads it from the environment only (no -Token parameter).
+    install = INSTALL_PS1.read_text(encoding="ascii")
+    assert "$token = $env:UPDATE_GITHUB_TOKEN" in install
+    assert not re.search(r"\[string\]\$\w*Token", install)
+
+
+def test_updater_folder_is_admin_and_system_only():
+    text = INSTALL_PS1.read_text(encoding="ascii")
+    grants = re.findall(r"icacls @\(\$(UpdaterDir|TokenFile), '/inheritance:r', '/grant:r', (.*)'/Q'\)", text)
+    assert {target for target, _ in grants} == {"UpdaterDir", "TokenFile"}
+    for _, args in grants:
+        sids = set(re.findall(r"\$\{(Sid\w+)\}", args))
+        assert sids == {"SidAdmins", "SidSystem"}, args
+
+
+def test_update_task_runs_as_system_and_is_removed_on_uninstall():
+    text = INSTALL_PS1.read_text(encoding="ascii")
+    assert "New-ScheduledTaskPrincipal -UserId (Get-AccountName $SidSystem)" in text
+    assert text.count("Unregister-ScheduledTask -TaskName $UpdateTaskName") >= 3  # -RemoveService, -Uninstall, disable
+    assert '"{app}\\updater"' in ISS.read_text(encoding="ascii")
+
+
+def test_powershell_scripts_are_ascii_crlf():
+    # Windows PowerShell 5.1 reads BOM-less scripts in the ANSI code page.
+    for script in (INSTALL_PS1, AUTO_UPDATE_PS1):
+        data = script.read_bytes()
+        data.decode("ascii")
+        assert data.count(b"\n") == data.count(b"\r\n"), script.name

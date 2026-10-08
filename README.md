@@ -37,7 +37,16 @@ The installer:
   task running as *LOCAL SERVICE*.
 
 Running a newer release's installer upgrades in place and keeps your settings and data. The `README.md` inside
-the archive covers reconfiguring and uninstalling. You still need a Discord application and a Twitch
+the archive covers reconfiguring and uninstalling.
+
+**Automatic updates (opt-in).** The installers can set up a daily job (systemd timer as root on Linux, scheduled
+task as SYSTEM on Windows) that installs newer releases through the same upgrade path, verifies them against
+`SHA256SUMS.txt`, and rolls back if the new version doesn't start. Because this repository is private, it needs
+a fine-grained GitHub token with read-only *Contents* access, stored separately from `.env`. Turn it on with
+`install.sh --auto-update` / `--enable-auto-update`, `install.cmd -AutoUpdate` / `-EnableAutoUpdate`, or the setup
+wizard's checkbox; see [packaging/README.md](packaging/README.md#automatic-updates). The logic lives in
+`twitchbot/updater.py` (standard library only) with thin wrappers in `packaging/linux/auto-update.sh` and
+`packaging/windows/auto-update.ps1`. You still need a Discord application and a Twitch
 application first (steps 1–2 below).
 
 ## Setup from source
@@ -88,6 +97,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\install-startup.ps1 -Uninstal
 | `.env` | Secrets and settings (see `.env.example`) |
 | `data/state.json` | Alert channels, tracked streams, filters and roles per server (written atomically) |
 | `logs/bot.log` | Rotating log (5 × 2 MB) |
+| `updater/github-token` | Only with automatic updates: the GitHub token (root / Administrators+SYSTEM only) |
 
 ### Upgrading from the 1.x bot
 

@@ -38,12 +38,14 @@ COMMON = [
 LINUX = [
     ("packaging/linux/install.sh", "install.sh", True),
     ("start-bot.sh", "start-bot.sh", True),
+    ("packaging/linux/auto-update.sh", "auto-update.sh", True),
 ]
 WINDOWS = [
     ("packaging/windows/install.cmd", "install.cmd", False),
     ("packaging/windows/install.ps1", "install.ps1", False),
     ("packaging/windows/uninstall.cmd", "uninstall.cmd", False),
     ("start-bot.cmd", "start-bot.cmd", False),
+    ("packaging/windows/auto-update.ps1", "auto-update.ps1", False),
 ]
 
 
@@ -128,6 +130,8 @@ SmartScreen may warn about it; click *More info* -> *Run anyway*. For scripted i
 The installers set up Python if needed, install the bot and its packages, ask for the Discord/Twitch
 credentials and check them, and start the bot as a service that runs at boot. Running a newer release's
 installer upgrades in place and keeps your settings and data. See `README.md` in the archive for details.
+
+Automatic updates are optional and off by default; see "Automatic updates" in `README.md`.
 
 Verify downloads with `sha256sum -c SHA256SUMS.txt` (Linux) or `Get-FileHash` (Windows).
 """

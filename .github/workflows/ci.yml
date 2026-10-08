@@ -41,17 +41,22 @@ jobs:
         with:
           persist-credentials: false
       - name: Shellcheck
-        run: shellcheck packaging/linux/install.sh start-bot.sh scripts/install-service.sh
+        run: shellcheck packaging/linux/install.sh packaging/linux/auto-update.sh start-bot.sh scripts/install-service.sh
       - name: Build release archives
         run: python3 scripts/build_release.py --out dist
       - name: Install (systemd service)
         run: |
           tar xzf dist/twitchdiscordbot-*-linux.tar.gz -C "$RUNNER_TEMP"
           cd "$RUNNER_TEMP"/twitchdiscordbot-*/
-          sudo DISCORD_TOKEN=ci-fake-token TWITCH_APP_ID=ci TWITCH_APP_SECRET=ci ./install.sh --yes --skip-check \
+          sudo DISCORD_TOKEN=ci-fake-token TWITCH_APP_ID=ci TWITCH_APP_SECRET=ci UPDATE_GITHUB_TOKEN=ci_fake_update_token \
+            ./install.sh --yes --skip-check --auto-update \
             || echo "installer exited with $? (expected: the bot can't log in with a fake token)"
-          sudo systemd-analyze verify /etc/systemd/system/twitchdiscordbot.service
+          sudo systemd-analyze verify /etc/systemd/system/twitchdiscordbot.service \
+            /etc/systemd/system/twitchdiscordbot-update.service /etc/systemd/system/twitchdiscordbot-update.timer
           test "$(sudo stat -c '%U:%G %a' /opt/twitchdiscordbot/.env)" = "root:twitchbot 640"
+          test "$(sudo stat -c '%U:%G %a' /opt/twitchdiscordbot/updater)" = "root:root 700"
+          test "$(sudo stat -c '%U:%G %a' /opt/twitchdiscordbot/updater/github-token)" = "root:root 600"
+          systemctl is-enabled twitchdiscordbot-update.timer
           for _ in $(seq 30); do
             sudo grep -q "Discord rejected the bot token" /opt/twitchdiscordbot/logs/bot.log 2>/dev/null && break
             sleep 2
@@ -64,9 +69,17 @@ jobs:
           cd "$RUNNER_TEMP"/twitchdiscordbot-*/
           sudo ./install.sh --yes --skip-check || true
           sudo grep -q "ci-fake-token" /opt/twitchdiscordbot/.env
+          # The upgrade keeps the auto-update choice and token; a check with a fake token fails without leaking it.
+          systemctl is-enabled twitchdiscordbot-update.timer
+          sudo grep -q "ci_fake_update_token" /opt/twitchdiscordbot/updater/github-token
+          out="$(sudo /opt/twitchdiscordbot/auto-update.sh --check 2>&1)" && code=0 || code=$?
+          echo "$out (exit code $code)"
+          if grep -q "ci_fake_update_token" <<<"$out"; then echo "token leaked into the output"; exit 1; fi
           sudo /opt/twitchdiscordbot/install.sh --uninstall --purge
           test ! -e /opt/twitchdiscordbot
           test ! -e /etc/systemd/system/twitchdiscordbot.service
+          test ! -e /etc/systemd/system/twitchdiscordbot-update.timer
+          test ! -e /etc/systemd/system/twitchdiscordbot-update.service
           ! id twitchbot
 
   # Same on Windows: scheduled task running as LOCAL SERVICE, installed with Windows PowerShell 5.1.
@@ -86,7 +99,7 @@ jobs:
         run: |
           Install-Module PSScriptAnalyzer -Force -Scope CurrentUser
           # Write-Host is intended (coloured installer output); ShouldProcess makes no sense for an installer script.
-          $issues = foreach ($script in 'packaging/windows/install.ps1', 'scripts/install-startup.ps1') {
+          $issues = foreach ($script in 'packaging/windows/install.ps1', 'packaging/windows/auto-update.ps1', 'scripts/install-startup.ps1') {
             Invoke-ScriptAnalyzer -Path $script -Severity Warning, Error `
               -ExcludeRule PSAvoidUsingWriteHost, PSUseShouldProcessForStateChangingFunctions
           }
@@ -100,8 +113,10 @@ jobs:
           Expand-Archive (Get-Item dist/twitchdiscordbot-*-windows.zip) -DestinationPath $env:RUNNER_TEMP
           $src = (Get-ChildItem $env:RUNNER_TEMP -Directory -Filter 'twitchdiscordbot-*')[0].FullName
           $env:DISCORD_TOKEN = 'ci-fake-token'; $env:TWITCH_APP_ID = 'ci'; $env:TWITCH_APP_SECRET = 'ci'
-          powershell -NoProfile -ExecutionPolicy Bypass -File "$src\install.ps1" -Yes -SkipCheck
+          $env:UPDATE_GITHUB_TOKEN = 'ci_fake_update_token'
+          powershell -NoProfile -ExecutionPolicy Bypass -File "$src\install.ps1" -Yes -SkipCheck -AutoUpdate
           "installer exit code: $LASTEXITCODE (non-zero expected: the bot can't log in with a fake token)"
+          Remove-Item Env:UPDATE_GITHUB_TOKEN
           $dir = "$env:ProgramData\TwitchDiscordBot"
           $task = Get-ScheduledTask -TaskName TwitchDiscordBot
           "task runs as: $($task.Principal.UserId)"
@@ -109,6 +124,12 @@ jobs:
           $readers = (Get-Acl "$dir\.env").Access.IdentityReference.Value
           "'.env' readable by: $($readers -join ', ')"
           if ($readers -match 'Users|Everyone') { throw '.env must not be readable by normal users' }
+          $update = Get-ScheduledTask -TaskName 'TwitchDiscordBot Update'
+          "update task runs as: $($update.Principal.UserId)"
+          if ($update.Principal.UserId -notmatch 'SYSTEM') { throw 'update task should run as SYSTEM' }
+          $tokenReaders = (Get-Acl "$dir\updater\github-token").Access.IdentityReference.Value
+          "'github-token' readable by: $($tokenReaders -join ', ')"
+          if ($tokenReaders -match 'Users|Everyone|LOCAL SERVICE') { throw 'github-token must be Administrators/SYSTEM only' }
           $log = "$dir\logs\bot.log"
           foreach ($i in 1..30) {
             if ((Test-Path $log) -and (Select-String -Quiet -Path $log -Pattern 'Discord rejected the bot token')) { break }
@@ -124,8 +145,11 @@ jobs:
           $dir = "$env:ProgramData\TwitchDiscordBot"
           powershell -NoProfile -ExecutionPolicy Bypass -File "$src\install.ps1" -Yes -SkipCheck
           if (-not (Select-String -Quiet -Path "$dir\.env" -Pattern 'ci-fake-token')) { throw 'settings lost on upgrade' }
+          if (-not (Get-ScheduledTask -TaskName 'TwitchDiscordBot Update' -ErrorAction SilentlyContinue)) { throw 'auto-update lost on upgrade' }
+          if (-not (Test-Path "$dir\updater\github-token")) { throw 'update token lost on upgrade' }
           powershell -NoProfile -ExecutionPolicy Bypass -File "$dir\install.ps1" -Uninstall -Purge
           if (Get-ScheduledTask -TaskName TwitchDiscordBot -ErrorAction SilentlyContinue) { throw 'task not removed' }
+          if (Get-ScheduledTask -TaskName 'TwitchDiscordBot Update' -ErrorAction SilentlyContinue) { throw 'update task not removed' }
           if (Test-Path $dir) { throw 'install folder not removed' }
           exit 0
 
@@ -161,7 +185,8 @@ jobs:
         run: |
           $exe = (Get-Item dist/*-windows-setup.exe).FullName
           $env:DISCORD_TOKEN = 'ci-fake-token'; $env:TWITCH_APP_ID = 'ci'; $env:TWITCH_APP_SECRET = 'ci'
-          $p = Start-Process $exe -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/LOG=$env:RUNNER_TEMP\setup-1.log" -Wait -PassThru
+          $env:UPDATE_GITHUB_TOKEN = 'ci_fake_update_token'
+          $p = Start-Process $exe -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/MERGETASKS=autoupdate', "/LOG=$env:RUNNER_TEMP\setup-1.log" -Wait -PassThru
           "setup exit code: $($p.ExitCode)"
           $dir = "$env:ProgramData\TwitchDiscordBot"
           Get-Content "$dir\logs\setup.log" -ErrorAction SilentlyContinue
@@ -175,6 +200,9 @@ jobs:
           $readers = (Get-Acl "$dir\.env").Access.IdentityReference.Value
           "'.env' readable by: $($readers -join ', ')"
           if ($readers -match 'Users|Everyone') { throw '.env must not be readable by normal users' }
+          if (-not (Get-ScheduledTask -TaskName 'TwitchDiscordBot Update' -ErrorAction SilentlyContinue)) { throw 'autoupdate task not applied' }
+          $tokenReaders = (Get-Acl "$dir\updater\github-token").Access.IdentityReference.Value
+          if ($tokenReaders -match 'Users|Everyone|LOCAL SERVICE') { throw 'github-token must be Administrators/SYSTEM only' }
           if ((Get-Content "$dir\VERSION").Trim() -ne (python -c "import twitchbot; print(twitchbot.__version__)")) { throw 'VERSION mismatch' }
           $log = "$dir\logs\bot.log"
           foreach ($i in 1..30) {
@@ -189,16 +217,18 @@ jobs:
         run: |
           $exe = (Get-Item dist/*-windows-setup.exe).FullName
           $dir = "$env:ProgramData\TwitchDiscordBot"
-          Remove-Item Env:DISCORD_TOKEN, Env:TWITCH_APP_ID, Env:TWITCH_APP_SECRET -ErrorAction SilentlyContinue
+          Remove-Item Env:DISCORD_TOKEN, Env:TWITCH_APP_ID, Env:TWITCH_APP_SECRET, Env:UPDATE_GITHUB_TOKEN -ErrorAction SilentlyContinue
           $p = Start-Process $exe -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/LOG=$env:RUNNER_TEMP\setup-2.log" -Wait -PassThru
           "upgrade exit code: $($p.ExitCode)"
           if ($p.ExitCode -ne 0) { Get-Content "$env:RUNNER_TEMP\setup-2.log"; throw 'upgrade failed' }
           if (-not (Select-String -Quiet -Path "$dir\.env" -Pattern 'ci-fake-token')) { throw 'settings lost on upgrade' }
           if (-not (Get-ScheduledTask -TaskName TwitchDiscordBot -ErrorAction SilentlyContinue)) { throw 'task missing after upgrade' }
+          if (-not (Get-ScheduledTask -TaskName 'TwitchDiscordBot Update' -ErrorAction SilentlyContinue)) { throw 'auto-update lost on upgrade' }
           $p = Start-Process "$dir\unins000.exe" -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/PURGE' -Wait -PassThru
           "uninstall exit code: $($p.ExitCode)"
           foreach ($i in 1..30) { if (-not (Test-Path $dir)) { break }; Start-Sleep -Seconds 2 }
           if (Get-ScheduledTask -TaskName TwitchDiscordBot -ErrorAction SilentlyContinue) { throw 'task not removed' }
+          if (Get-ScheduledTask -TaskName 'TwitchDiscordBot Update' -ErrorAction SilentlyContinue) { throw 'update task not removed' }
           if (Test-Path $dir) { Get-ChildItem -Recurse -Force $dir | Select-Object -First 20 FullName; throw 'install folder not removed' }
           if (Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{B7E3F0A4-5C2D-4E8B-9F1A-6D3C2B7A8E51}_is1') {
             throw 'Apps & features entry not removed'
