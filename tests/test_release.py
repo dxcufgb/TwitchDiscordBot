@@ -87,3 +87,34 @@ def test_updater_accepts_the_real_archives(tmp_path):
     assert (root / "install.sh").is_file() and (root / "auto-update.sh").is_file()
     root = updater.extract(windows, tmp_path / "x-windows", prefix)
     assert (root / "install.ps1").is_file() and (root / "auto-update.ps1").is_file()
+
+
+def load_build_release(monkeypatch, root):
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("build_release_under_test", ROOT / "scripts" / "build_release.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setattr(module, "ROOT", root)
+    return module
+
+
+def test_changes_skip_pre_release_tags_for_a_final_release(tmp_path, monkeypatch):
+    def git(*args):
+        subprocess.run(
+            ["git", "-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "tag.gpgSign=false",
+             "-c", "commit.gpgSign=false", *args],
+            cwd=tmp_path, check=True, capture_output=True,
+        )  # fmt: skip
+
+    git("init", "-q")
+    for message, tag in (("first", "v2.0.0"), ("second", "v2.1.0-rc.1"), ("third", None)):
+        git("commit", "-q", "--allow-empty", "-m", message)
+        if tag:
+            git("tag", tag)
+    build_release = load_build_release(monkeypatch, tmp_path)
+
+    final = build_release.changes("2.1.0")
+    assert "Changes since v2.0.0:" in final and "- second" in final and "- third" in final
+    pre = build_release.changes("2.1.0-rc.2")
+    assert "Changes since v2.1.0-rc.1:" in pre and "- third" in pre and "- second" not in pre

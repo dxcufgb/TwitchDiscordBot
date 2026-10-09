@@ -93,7 +93,10 @@ def changes(version: str) -> str:
     """CHANGES.md: one line per commit since the previous release tag (or a link if git can't tell)."""
     header = f"# TwitchDiscordBot {version}\n\n"
     link = f"Release notes: https://github.com/dxcufgb/TwitchDiscordBot/releases/tag/v{version}\n"
-    previous = git("describe", "--tags", "--abbrev=0", "--match", "v[0-9]*", "--exclude", f"v{version}", "HEAD")
+    args = ["describe", "--tags", "--abbrev=0", "--match", "v[0-9]*", "--exclude", f"v{version}"]
+    if "-" not in version:
+        args += ["--exclude", "v*-*"]  # a final release lists the changes since the previous final release
+    previous = git(*args, "HEAD")
     if not previous or not previous.strip():
         return header + link
     log = git("log", "--no-merges", "--format=- %s", f"{previous.strip()}..HEAD")

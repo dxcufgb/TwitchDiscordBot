@@ -127,6 +127,39 @@ begin
       Result := True;
 end;
 
+{ UPDATE_NOTIFY from an existing .env (python-dotenv rules, simplified); admins, the bot's default, otherwise. }
+function ConfiguredUpdateNotify: String;
+var
+  Lines: TArrayOfString;
+  I, P: Integer;
+  Line, Key: String;
+begin
+  Result := 'admins';
+  if not LoadStringsFromFile(ConfigFile, Lines) then
+    exit;
+  for I := 0 to GetArrayLength(Lines) - 1 do
+  begin
+    Line := Trim(Lines[I]);
+    P := Pos('=', Line);
+    Key := '';
+    if P > 0 then
+      Key := Trim(Copy(Line, 1, P - 1));
+    if Pos('export ', Lowercase(Key)) = 1 then
+      Key := Trim(Copy(Key, 8, Length(Key)));
+    if CompareText(Key, 'UPDATE_NOTIFY') = 0 then
+    begin
+      Line := Trim(Copy(Line, P + 1, Length(Line)));
+      P := Pos('#', Line);
+      if P > 0 then
+        Line := Trim(Copy(Line, 1, P - 1));
+      StringChangeEx(Line, '"', '', True);
+      StringChangeEx(Line, '''', '', True);
+      if Line <> '' then
+        Result := Lowercase(Line);
+    end;
+  end;
+end;
+
 function ReadLines(const FileName: String; MaxLines: Integer): String;
 var
   Lines: TArrayOfString;
@@ -150,7 +183,8 @@ var
 begin
   HadConfig := FileExists(ConfigFile);
   Intro := 'Discord bot token: https://discord.com/developers/applications -> your app -> Bot -> Reset Token.' + #13#10 +
-    'On the same Bot page, turn on "Server Members Intent" (Privileged Gateway Intents); the bot needs it.' + #13#10 +
+    'Recommended: on the same Bot page turn on "Server Members Intent" (Privileged Gateway Intents) so update' + #13#10 +
+    'notices reach server admins too; without it they go to server owners only.' + #13#10 +
     'Twitch Client ID and secret: https://dev.twitch.tv/console/apps -> your app -> Manage.' + #13#10#13#10 +
     'The values are checked with Discord and Twitch when you click Next.';
   if HadConfig then
@@ -190,10 +224,10 @@ begin
       Result := False;
 end;
 
-function CheckCredentials(const Token, ClientId, Secret: String; var Report: String): Boolean;
+{ Code: 0 = accepted, 1 = rejected or not checked, 2 = accepted with a warning (see check-credentials.ps1). }
+function CheckCredentials(const Token, ClientId, Secret: String; var Report: String; var Code: Integer): Boolean;
 var
   OutFile: String;
-  Code: Integer;
 begin
   ExtractTemporaryFile('check-credentials.ps1');
   OutFile := ExpandConstant('{tmp}\check-result.txt');
@@ -202,14 +236,19 @@ begin
   SetEnvironmentVariable('TDB_DISCORD_TOKEN', Token);
   SetEnvironmentVariable('TDB_TWITCH_ID', ClientId);
   SetEnvironmentVariable('TDB_TWITCH_SECRET', Secret);
+  { Only UPDATE_NOTIFY=admins (the default) asks Discord for the Server Members Intent. }
+  SetEnvironmentVariable('TDB_UPDATE_NOTIFY', ConfiguredUpdateNotify);
   try
-    Result := Exec(PowerShellExe, '-NoProfile -ExecutionPolicy Bypass -File "' +
+    if not Exec(PowerShellExe, '-NoProfile -ExecutionPolicy Bypass -File "' +
       ExpandConstant('{tmp}\check-credentials.ps1') + '" -OutFile "' + OutFile + '"',
-      '', SW_HIDE, ewWaitUntilTerminated, Code) and (Code = 0);
+      '', SW_HIDE, ewWaitUntilTerminated, Code) then
+      Code := 1;
+    Result := (Code = 0) or (Code = 2);
   finally
     UnsetEnvironmentVariable('TDB_DISCORD_TOKEN', 0);
     UnsetEnvironmentVariable('TDB_TWITCH_ID', 0);
     UnsetEnvironmentVariable('TDB_TWITCH_SECRET', 0);
+    UnsetEnvironmentVariable('TDB_UPDATE_NOTIFY', 0);
   end;
   Report := ReadLines(OutFile, 10);
   if Report = '' then
@@ -219,7 +258,7 @@ end;
 function NextButtonClick(CurPageID: Integer): Boolean;
 var
   Token, ClientId, Secret, Owner, Report: String;
-  I: Integer;
+  I, Code: Integer;
 begin
   Result := True;
   if WizardSilent then
@@ -265,9 +304,11 @@ begin
 
   WizardForm.NextButton.Enabled := False;
   try
-    if not CheckCredentials(Token, ClientId, Secret, Report) then
+    if not CheckCredentials(Token, ClientId, Secret, Report, Code) then
       Result := MsgBox('The credentials could not be verified:' + #13#10#13#10 + Report + #13#10 +
-        'Continue anyway?', mbConfirmation, MB_YESNO or MB_DEFBUTTON2) = IDYES;
+        'Continue anyway?', mbConfirmation, MB_YESNO or MB_DEFBUTTON2) = IDYES
+    else if Code = 2 then
+      MsgBox('The credentials work. Note:' + #13#10#13#10 + Report, mbInformation, MB_OK);
   finally
     WizardForm.NextButton.Enabled := True;
   end;

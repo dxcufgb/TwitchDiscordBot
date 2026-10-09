@@ -92,3 +92,23 @@ def test_powershell_scripts_are_ascii_crlf():
         data = script.read_bytes()
         data.decode("ascii")
         assert data.count(b"\n") == data.count(b"\r\n"), script.name
+
+
+def test_credential_check_knows_the_update_notify_mode():
+    # The wizard passes UPDATE_NOTIFY from .env; only admins checks the Server Members Intent, and only as a warning.
+    text = ISS.read_text(encoding="ascii")
+    assert "SetEnvironmentVariable('TDB_UPDATE_NOTIFY', ConfiguredUpdateNotify)" in text
+    assert "UnsetEnvironmentVariable('TDB_UPDATE_NOTIFY'" in text
+    check = (WINDOWS / "check-credentials.ps1").read_text(encoding="ascii")
+    assert "$env:TDB_UPDATE_NOTIFY" in check and "if ($notifyMode -eq 'admins')" in check
+    intent = check[check.index("if ($notifyMode -eq 'admins')") :]
+    assert "$ok = $false" not in intent.split("} catch {")[0]  # a missing intent never fails the check
+
+
+def test_rollbacks_are_verified():
+    linux = (WINDOWS.parent / "linux" / "auto-update.sh").read_text(encoding="ascii")
+    windows = AUTO_UPDATE_PS1.read_text(encoding="ascii")
+    for text in (linux, windows):
+        assert "ROLLBACK FAILED" in text
+    assert "verify_rollback" in linux and "trap - EXIT" in linux
+    assert "Test-BotRunning" in windows and "$keepWork" in windows

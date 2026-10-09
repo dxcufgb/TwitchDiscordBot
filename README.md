@@ -52,10 +52,11 @@ application first (steps 1–2 below).
 ## Setup from source
 
 1. **Discord application** ([Developer Portal](https://discord.com/developers/applications)): create a bot
-   and copy its token. On the same *Bot* page turn on **Server Members Intent** (under *Privileged Gateway
-   Intents*): the bot needs it to find server admins for update notifications, and Discord refuses the
-   connection without it (the log then says how to fix it; `python Main.py --check` checks it too). It is not
-   requested when `UPDATE_NOTIFY` is `owner` or `off`. Invite it
+   and copy its token. Recommended: on the same *Bot* page turn on **Server Members Intent** (under
+   *Privileged Gateway Intents*). With `UPDATE_NOTIFY=admins` (the default) the bot asks for it to find server
+   admins for update notifications. If it is off, Discord refuses that connection; the bot then logs one
+   warning and starts again without it, sending update notices to server owners only (`python Main.py --check`
+   warns about it too). Set `UPDATE_NOTIFY=owner` to silence the warning. Invite it
    with the `bot` and `applications.commands` scopes and these permissions: *View Channels, Send Messages, Embed Links, Mention @everyone/@here/All Roles,
    Manage Roles*.
 2. **Twitch application** ([Twitch dev console](https://dev.twitch.tv/console/apps)): register an app and copy
@@ -100,7 +101,8 @@ each server owner and administrator, listing the servers it applies to, with the
 when the auto-updater installed it, otherwise from `CHANGES.md` in the release archive (just the version and
 a link if neither is available). It happens once per version; the first start after installing only records
 the version. People with DMs closed are skipped. Set `UPDATE_NOTIFY` in `.env` to `admins` (default),
-`owner` (server owners only) or `off`.
+`owner` (server owners only) or `off`. Finding administrators needs the *Server Members Intent*; when it is
+turned off in the Developer Portal, `admins` works like `owner` and the log says so once per start.
 
 ## Files
 

@@ -86,6 +86,23 @@ as_bot() {
 
 has_systemd() { command -v systemctl >/dev/null 2>&1 && [[ -d /run/systemd/system ]]; }
 
+# Program files belong to root and are not writable by the bot user: root runs the installer, the updater and the
+# virtual environment's Python from here, so a compromised bot account must not be able to change them. The bot user
+# only owns data/ and logs/ and can read .env (root:$BOT_USER 640).
+secure_program_files() {
+    local entry
+    chown root:root "$PREFIX"
+    chmod 755 "$PREFIX"
+    while IFS= read -r -d '' entry; do
+        chown -R root:root "$entry"  # -R without -L never follows symbolic links
+        if [[ ! -L $entry ]]; then chmod -R go-w "$entry"; fi
+    done < <(find "$PREFIX" -mindepth 1 -maxdepth 1 ! -name .env ! -name data ! -name logs ! -name updater -print0)
+}
+
+venv_is_root_only() {  # 0 if nothing in the virtual environment is owned or writable by anyone but root
+    [[ -z "$(find "$PREFIX/.venv" ! -type l \( ! -user root -o -perm /002 -o \( -perm /020 ! -group root \) \) -print -quit 2>/dev/null)" ]]
+}
+
 [[ $EUID -eq 0 ]] || die "Please run as root: sudo $0 $*"
 
 # ---------------------------------------------------------------- automatic updates (opt-in)
@@ -236,6 +253,10 @@ if [[ $ACTION == uninstall ]]; then
             find "$PREFIX" -mindepth 1 -maxdepth 1 ! -name .env ! -name data ! -name logs -exec rm -rf {} +
         fi
     fi
+    if [[ $PURGE -eq 1 && -d /var/lib/${SERVICE}-update ]]; then
+        info "Deleting backups kept by a failed automatic update rollback"
+        rm -rf "/var/lib/${SERVICE}-update"
+    fi
     if [[ $PURGE -eq 1 ]] && id "$BOT_USER" >/dev/null 2>&1; then
         info "Removing user $BOT_USER"
         userdel "$BOT_USER" 2>/dev/null || warn "could not remove user $BOT_USER"
@@ -324,6 +345,16 @@ if [[ $ACTION == install ]]; then
     fi
 
     install -d -m 755 "$PREFIX"
+    # Root writes and chowns these by name below; a symbolic link here would redirect that elsewhere.
+    for f in .env data logs; do
+        [[ ! -L $PREFIX/$f ]] || die "$PREFIX/$f is a symbolic link; remove it and run the installer again."
+    done
+    if [[ -e $PREFIX/.venv ]] && ! venv_is_root_only; then
+        # Root runs this Python (pip, the updater): never trust one that someone else could have changed.
+        info "Existing virtual environment was writable by other users; recreating it"
+        rm -rf "$PREFIX/.venv"
+    fi
+    secure_program_files  # before copying: an earlier, looser layout must not keep its owner on replaced files
     if [[ $SRC_DIR != "$PREFIX" ]]; then
         info "Installing $(cat "$SRC_DIR/VERSION" 2>/dev/null || echo 'files') into $PREFIX"
         rm -rf "$PREFIX/twitchbot"
@@ -336,7 +367,6 @@ if [[ $ACTION == install ]]; then
             cp "$SRC_DIR/auto-update.sh" "$PREFIX/.auto-update.sh.new"
             mv -f "$PREFIX/.auto-update.sh.new" "$PREFIX/auto-update.sh"
         fi
-        chown -R root:root "$PREFIX/twitchbot"
         chmod 755 "$PREFIX/install.sh" "$PREFIX/start-bot.sh" "$PREFIX/auto-update.sh" 2>/dev/null || true
     fi
     install -d -m 750 -o "$BOT_USER" -g "$BOT_USER" "$PREFIX/data" "$PREFIX/logs"
@@ -348,7 +378,12 @@ if [[ $ACTION == install ]]; then
             confirm "Found an existing installation in $OLD_DIR. Import its settings and data?"; then
             info "Importing settings and data from $OLD_DIR"
             cp "$OLD_DIR/.env" "$PREFIX/.env"
-            [[ -d $OLD_DIR/data ]] && cp -R "$OLD_DIR/data/." "$PREFIX/data/"
+            # Only into an empty data/: root must not copy into whatever the bot user may have put there.
+            if [[ -d $OLD_DIR/data && -z "$(find "$PREFIX/data" -mindepth 1 -print -quit)" ]]; then
+                cp -R "$OLD_DIR/data/." "$PREFIX/data/"
+            elif [[ -d $OLD_DIR/data ]]; then
+                warn "$PREFIX/data is not empty; not importing $OLD_DIR/data"
+            fi
             # 1.x data files; the bot migrates them on first start if data/state.json doesn't exist yet.
             find "$OLD_DIR" -maxdepth 1 \( -name 'Streams.json' -o -name 'streams.json' -o -name '*-Stream.json' \) \
                 -exec cp {} "$PREFIX/" \;
@@ -373,9 +408,11 @@ if [[ $ACTION == install ]]; then
     "$VENV_PY" -m pip install --disable-pip-version-check --no-input -q -r "$PREFIX/requirements.txt"
     sha256sum "$PREFIX/requirements.txt" | cut -d' ' -f1 >"$PREFIX/.venv/.requirements.sha256"
     "$VENV_PY" -m compileall -q "$PREFIX/twitchbot" >/dev/null || true
+    secure_program_files
 fi
 
 [[ -x $VENV_PY && -f $PREFIX/Main.py ]] || die "TwitchDiscordBot is not installed in $PREFIX; run the installer from the release folder first."
+venv_is_root_only || die "The virtual environment in $PREFIX/.venv is writable by other users; run install.sh from the release folder to recreate it."
 
 # ---------------------------------------------------------------- configuration
 env_has() {  # env_has KEY... -> 0 if any key has a non-empty value in .env
@@ -430,7 +467,8 @@ configure() {
 
 Credentials (input for secrets is hidden):
   * Discord bot token:  https://discord.com/developers/applications -> your app -> Bot -> Reset Token
-    On the same Bot page, turn on "Server Members Intent" (Privileged Gateway Intents); the bot needs it.
+    Recommended: on the same Bot page turn on "Server Members Intent" (Privileged Gateway Intents) so update
+    notices reach server admins too; without it they go to server owners only.
   * Twitch Client ID and secret: https://dev.twitch.tv/console/apps -> your app -> Manage
 TXT
     ask DISCORD_TOKEN "Discord bot token" 1 1

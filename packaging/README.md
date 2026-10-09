@@ -5,10 +5,10 @@ Posts an alert in Discord, and pings a per-stream role, when the Twitch channels
 ## Before you install
 
 1. **Discord bot** ([Developer Portal](https://discord.com/developers/applications)): create an application,
-   add a bot, and copy its **token**. On the same *Bot* page, turn on **Server Members Intent** (*Privileged
-   Gateway Intents*): the bot needs it to DM server admins about updates, and Discord refuses to connect the bot
-   without it (the installer's check and `logs/bot.log` tell you if it is off). Not needed when `UPDATE_NOTIFY`
-   is `owner` or `off`. Invite it to your server with the
+   add a bot, and copy its **token**. Recommended: on the same *Bot* page, turn on **Server Members Intent**
+   (*Privileged Gateway Intents*) so update notices reach server admins too. Without it the bot still runs and
+   DMs server owners only; the installer's check and `logs/bot.log` warn about it (set `UPDATE_NOTIFY=owner` in
+   `.env` to silence that). Invite it to your server with the
    `bot` and `applications.commands` scopes and these permissions: *View Channels, Send Messages, Embed Links,
    Mention @everyone/@here/All Roles, Manage Roles*.
 2. **Twitch app** ([Twitch dev console](https://dev.twitch.tv/console/apps)): register an application
@@ -71,7 +71,8 @@ each server owner and administrator, listing the servers it applies to, with the
 when the auto-updater installed it, otherwise from `CHANGES.md` in the release archive (just the version and
 a link if neither is available). It happens once per version; the first start after installing only records
 the version. People with DMs closed are skipped. Set `UPDATE_NOTIFY` in `.env` to `admins` (default),
-`owner` (server owners only) or `off`.
+`owner` (server owners only) or `off`. Finding administrators needs the *Server Members Intent*; when it is
+turned off in the Developer Portal, `admins` works like `owner` and `logs/bot.log` says so once per start.
 
 ## Automatic updates
 
@@ -80,7 +81,16 @@ it with the same installer you would run by hand: settings (`.env`), data and lo
 permissions, and the bot is restarted. Pre-releases and drafts are ignored, and older or equal versions are
 never installed. The download is checked against the release's `SHA256SUMS.txt`. If the upgrade fails (for
 example the new version does not stay running), the previous program files are restored and the old version
-is started again.
+is started again. The rollback is checked too: if a restore step fails, the restored version does not match the
+backup, or a bot that was running before is not running again after a short wait, the log says
+`ROLLBACK FAILED: ...` with manual recovery steps, the update exits with an error, and the backup of the previous
+program files is kept (Linux: `/var/lib/twitchdiscordbot-update/backup-<time>`, removed by `--uninstall --purge`;
+Windows: `C:\ProgramData\TwitchDiscordBot\updater\rollback-backup-<time>`). Delete it once the bot works again.
+
+On Linux the updater runs as root, so the program files it runs (`twitchbot/`, `Main.py`, the scripts, `.venv`)
+belong to root and are not writable by the `twitchbot` user, which owns only `data/` and `logs/` and can read
+`.env`. The installer enforces this on every install or upgrade (and recreates a virtual environment that other
+users could write to); the updater refuses to run if it finds it otherwise.
 
 **GitHub token.** The repository is private, so the updater needs a token. Create a *fine-grained personal
 access token* at <https://github.com/settings/personal-access-tokens>: *Resource owner* `dxcufgb`, *Only select

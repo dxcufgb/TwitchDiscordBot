@@ -8,7 +8,9 @@
 #
 # It downloads the newest release's -linux.tar.gz, verifies it against SHA256SUMS.txt, and runs that
 # release's install.sh (the normal upgrade path, keeping .env and data/). If the upgrade fails, the
-# previous program files are restored and the bot is started again. Logs go to the journal:
+# previous program files are restored and the bot is started again; if that rollback fails too, it logs
+# "ROLLBACK FAILED", keeps the backup under /var/lib/twitchdiscordbot-update/ and exits non-zero.
+# Logs go to the journal:
 #   journalctl -u twitchdiscordbot-update
 set -euo pipefail
 # Same as an interactive root shell: the files the installer copies must stay readable for the bot user.
@@ -20,8 +22,10 @@ PREFIX="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TOKEN_FILE="$PREFIX/updater/github-token"
 LOCK_FILE="/run/${SERVICE}-update.lock"
 VENV_PY="$PREFIX/.venv/bin/python"
+BACKUP_KEEP_DIR="/var/lib/${SERVICE}-update"
 MODE=update
 BOT_USER=""
+ROLLBACK_ERRORS=()
 
 log() { printf '%s\n' "$*"; }
 die() { printf 'Error: %s\n' "$*" >&2; exit 1; }
@@ -40,6 +44,10 @@ main() {
     [[ $EUID -eq 0 ]] || die "Please run as root: sudo $0"
     [[ -x $VENV_PY && -f $PREFIX/twitchbot/updater.py ]] || die "TwitchDiscordBot is not installed in $PREFIX."
     [[ -f $TOKEN_FILE ]] || die "No GitHub token in $TOKEN_FILE. Enable auto-update with: sudo $PREFIX/install.sh --enable-auto-update"
+    # Root runs this Python and updater.py: refuse if anyone but root could have changed them.
+    if [[ -n "$(find "$PREFIX/.venv" "$PREFIX/twitchbot" ! -type l \( ! -user root -o -perm /002 -o \( -perm /020 ! -group root \) \) -print -quit)" ]]; then
+        die "Program files in $PREFIX are writable by other users; run install.sh from a release folder to repair them."
+    fi
     if [[ -z $BOT_USER && -f $UNIT_FILE ]]; then
         BOT_USER="$(sed -n 's/^User=//p' "$UNIT_FILE" | head -n1)"
     fi
@@ -72,6 +80,14 @@ main() {
     new_dir="$(printf '%s\n' "$new_dir" | tail -n1)"
     [[ -x $new_dir/install.sh && $new_dir == "$work/new/"* ]] || die "Downloaded release has no install.sh."
 
+    # Whether the bot was running, so a rollback can check that it runs again.
+    local was_running=0
+    if command -v systemctl >/dev/null 2>&1 && [[ -f $UNIT_FILE ]]; then
+        case "$(systemctl is-active "$SERVICE" 2>/dev/null || true)" in
+            active | activating | reloading) was_running=1 ;;
+        esac
+    fi
+
     log "Backing up the current program files"
     backup_files "$work/backup"
     # Release notes for the bot, which DMs them to server admins when the new version starts.
@@ -96,9 +112,17 @@ main() {
 
     log "The upgrade failed; restoring the previous version"
     as_bot rm -f "$PREFIX/data/update-notice.json" || true
-    restore_files "$work/backup"
+    # Every step records its own failure instead of aborting (set -e), so the verdict below always runs.
+    restore_files "$work/backup" "$was_running"
+    verify_rollback "$work/backup" "$was_running"
+    if [[ ${#ROLLBACK_ERRORS[@]} -gt 0 ]]; then
+        rollback_failed "$work"
+        return 1
+    fi
     die "Upgrade failed and was rolled back to $(cat "$PREFIX/VERSION" 2>/dev/null || echo 'the previous version')."
 }
+
+rollback_error() { ROLLBACK_ERRORS+=("$*"); }
 
 as_bot() {
     if command -v runuser >/dev/null 2>&1; then runuser -u "$BOT_USER" -- "$@"; else sudo -u "$BOT_USER" -- "$@"; fi
@@ -125,18 +149,65 @@ backup_files() {
     return 0
 }
 
-restore_files() {
-    local src=$1 entry
+restore_files() {  # restore_files BACKUP WAS_RUNNING; failures go to ROLLBACK_ERRORS, never abort
+    local src=$1 was_running=$2 entry
     if command -v systemctl >/dev/null 2>&1; then systemctl stop "$SERVICE" 2>/dev/null || true; fi
     while IFS= read -r -d '' entry; do
-        rm -rf "$entry"
+        rm -rf "$entry" || rollback_error "could not remove $entry"
     done < <(program_entries)
-    cp -a "$src/files/." "$PREFIX/"
-    cp -a "$src/units/." /etc/systemd/system/
+    cp -a "$src/files/." "$PREFIX/" || rollback_error "could not copy the program files back into $PREFIX"
+    cp -a "$src/units/." /etc/systemd/system/ || rollback_error "could not restore the systemd unit files"
     if command -v systemctl >/dev/null 2>&1 && [[ -f $UNIT_FILE ]]; then
-        systemctl daemon-reload
-        systemctl restart "$SERVICE" || true
+        systemctl daemon-reload || rollback_error "systemctl daemon-reload failed"
+        if ! systemctl restart "$SERVICE" && [[ $was_running -eq 1 ]]; then
+            rollback_error "systemctl restart $SERVICE failed"
+        fi
     fi
+    return 0
+}
+
+verify_rollback() {  # verify_rollback BACKUP WAS_RUNNING
+    local src=$1 was_running=$2
+    if [[ -f $src/files/VERSION ]] && ! cmp -s "$src/files/VERSION" "$PREFIX/VERSION"; then
+        rollback_error "$PREFIX/VERSION does not match the backup"
+    fi
+    if [[ ! -x $VENV_PY || ! -f $PREFIX/Main.py ]]; then
+        rollback_error "the restored installation is incomplete (no Main.py or virtual environment)"
+    fi
+    if [[ $was_running -eq 1 ]]; then
+        # Same idea as install.sh: give it a moment, then it must still be up (Restart= would show "activating").
+        sleep 10
+        if ! systemctl is-active --quiet "$SERVICE"; then
+            rollback_error "the $SERVICE service is not running again"
+        fi
+    fi
+    return 0
+}
+
+rollback_failed() {  # rollback_failed WORKDIR: report, keep the backup, print manual recovery steps
+    local work=$1 keep="" error
+    if install -d -m 700 -o root -g root "$BACKUP_KEEP_DIR" 2>/dev/null; then
+        keep="$BACKUP_KEEP_DIR/backup-$(date +%Y%m%d-%H%M%S)"
+        if ! mv "$work/backup" "$keep" 2>/dev/null; then keep=""; fi
+    fi
+    if [[ -z $keep ]]; then
+        trap - EXIT  # could not move it: keep the whole work folder instead of deleting it
+        keep="$work/backup"
+    fi
+    for error in "${ROLLBACK_ERRORS[@]}"; do
+        log "ROLLBACK FAILED: $error"
+    done
+    cat <<TXT
+ROLLBACK FAILED: the upgrade failed and the previous version could not be fully restored.
+The backup of the previous program files was kept in: $keep
+Manual recovery, as root:
+  systemctl stop $SERVICE
+  find $PREFIX -mindepth 1 -maxdepth 1 ! -name .env ! -name data ! -name logs ! -name updater -exec rm -rf {} +
+  cp -a $keep/files/. $PREFIX/
+  cp -a $keep/units/. /etc/systemd/system/ && systemctl daemon-reload
+  systemctl start $SERVICE && journalctl -u $SERVICE -n 50 --no-pager
+Or run install.sh from the extracted release folder of the version you want. Delete the backup afterwards.
+TXT
 }
 
 main "$@"; exit $?

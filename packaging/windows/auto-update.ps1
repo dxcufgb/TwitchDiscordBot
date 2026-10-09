@@ -10,7 +10,9 @@
 
     It downloads the newest release's -windows.zip, verifies it against SHA256SUMS.txt and runs that release's
     install.ps1 (the normal upgrade path, which keeps .env, data and logs). If the upgrade fails, the previous
-    program files are restored and the bot is started again. Log: <install folder>\updater\update.log
+    program files are restored and the bot is started again; if that rollback fails too, the log says
+    "ROLLBACK FAILED", the backup is kept in <install folder>\updater\rollback-backup-<time> and the exit code is 1.
+    Log: <install folder>\updater\update.log
 
 .PARAMETER Check  Only report whether a newer release exists.
 #>
@@ -38,6 +40,12 @@ function Stop-Bot {
     Get-CimInstance Win32_Process -Filter "Name='python.exe' OR Name='cmd.exe'" -ErrorAction SilentlyContinue |
         Where-Object { $_.CommandLine -and $_.CommandLine -like "*$InstallDir*" } |
         ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+}
+
+function Test-BotRunning {
+    # Same test as install.ps1: the bot's python.exe from this install folder is running Main.py.
+    [bool](Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.CommandLine -like '*Main.py*' -and $_.ExecutablePath -like "$InstallDir*" })
 }
 
 function Get-ProgramItem {
@@ -72,6 +80,7 @@ function Update-Bot([bool]$CheckOnly) {
     # Work inside the updater folder: only Administrators and SYSTEM can write there (unlike %TEMP% of SYSTEM).
     $work = Join-Path $UpdaterDir ('work-' + [Guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $work | Out-Null
+    $keepWork = $false
     try {
         $result = Invoke-Updater @('download', '--dest', (Join-Path $work 'new'))
         if ($result.Code -eq 3) { return 0 }
@@ -88,6 +97,7 @@ function Update-Bot([bool]$CheckOnly) {
         }
         $newVersion = (Get-Content (Join-Path $newDir 'VERSION') -ErrorAction SilentlyContinue | Select-Object -First 1)
 
+        $wasRunning = Test-BotRunning  # so a rollback can check that it runs again
         Write-UpdateLog 'Backing up the current program files'
         $backup = Join-Path $work 'backup'
         New-Item -ItemType Directory -Path $backup | Out-Null
@@ -147,15 +157,54 @@ function Update-Bot([bool]$CheckOnly) {
         }
 
         Write-UpdateLog "The upgrade failed (exit code $($p.ExitCode)); restoring the previous version"
-        Stop-Bot
+        # Each step records its own failure instead of throwing, so the verdict below always runs.
+        $problems = New-Object System.Collections.Generic.List[string]
+        try { Stop-Bot } catch { $problems.Add("could not stop the bot: $($_.Exception.Message)") }
         Remove-Item -Force $noticeDest -ErrorAction SilentlyContinue
-        Get-ProgramItem | Remove-Item -Recurse -Force
-        Get-ChildItem -Force $backup | ForEach-Object { Copy-Item -Recurse -Force $_.FullName $InstallDir }
-        if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) { Start-ScheduledTask -TaskName $TaskName }
-        Write-UpdateLog 'Rolled back; the previous version is running again.'
+        try { Get-ProgramItem | Remove-Item -Recurse -Force } catch {
+            $problems.Add("could not remove the new program files: $($_.Exception.Message)")
+        }
+        try { Get-ChildItem -Force $backup | ForEach-Object { Copy-Item -Recurse -Force $_.FullName $InstallDir } } catch {
+            $problems.Add("could not copy the program files back: $($_.Exception.Message)")
+        }
+        if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
+            try { Start-ScheduledTask -TaskName $TaskName } catch {
+                $problems.Add("could not start the '$TaskName' task: $($_.Exception.Message)")
+            }
+        } elseif ($wasRunning) {
+            $problems.Add("the '$TaskName' task is missing")
+        }
+
+        $backupVersion = Join-Path $backup 'VERSION'
+        $installedVersion = Join-Path $InstallDir 'VERSION'
+        if ((Test-Path $backupVersion) -and -not ((Test-Path $installedVersion) -and
+                ((Get-Content -Raw $backupVersion) -eq (Get-Content -Raw $installedVersion)))) {
+            $problems.Add("$installedVersion does not match the backup")
+        }
+        if (-not ((Test-Path $VenvPy) -and (Test-Path (Join-Path $InstallDir 'Main.py')))) {
+            $problems.Add('the restored installation is incomplete (no Main.py or virtual environment)')
+        }
+        if ($wasRunning) {
+            Start-Sleep -Seconds 10  # same wait as install.ps1
+            if (-not (Test-BotRunning)) { $problems.Add('the bot is not running again') }
+        }
+
+        if ($problems.Count -gt 0) {
+            $kept = Join-Path $UpdaterDir ('rollback-backup-' + (Get-Date -Format 'yyyyMMdd-HHmmss'))
+            try { Move-Item -Path $backup -Destination $kept } catch { $kept = $backup; $keepWork = $true }
+            foreach ($problem in $problems) { Write-UpdateLog "ROLLBACK FAILED: $problem" }
+            Write-UpdateLog "ROLLBACK FAILED: the backup of the previous program files was kept in $kept"
+            Write-UpdateLog ("Manual recovery (elevated PowerShell): Stop-ScheduledTask $TaskName; delete everything in " +
+                "$InstallDir except .env, data, logs and updater; Copy-Item -Recurse -Force `"$kept\*`" `"$InstallDir`"; " +
+                "Start-ScheduledTask $TaskName; then check logs\bot.log. Or run the setup wizard or install.cmd of the " +
+                'version you want. Delete the backup afterwards.')
+            return 1
+        }
+        if ($wasRunning) { Write-UpdateLog 'Rolled back; the previous version is running again.' }
+        else { Write-UpdateLog 'Rolled back to the previous version.' }
         return 1
     } finally {
-        Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
+        if (-not $keepWork) { Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue }
     }
 }
 

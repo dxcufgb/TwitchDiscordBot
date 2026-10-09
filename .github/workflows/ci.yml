@@ -56,6 +56,12 @@ jobs:
           test "$(sudo stat -c '%U:%G %a' /opt/twitchdiscordbot/.env)" = "root:twitchbot 640"
           test "$(sudo stat -c '%U:%G %a' /opt/twitchdiscordbot/updater)" = "root:root 700"
           test "$(sudo stat -c '%U:%G %a' /opt/twitchdiscordbot/updater/github-token)" = "root:root 600"
+          # Program files are root's and not writable by the bot user, which owns only data/ and logs/.
+          test "$(sudo stat -c '%U:%G %a' /opt/twitchdiscordbot)" = "root:root 755"
+          test "$(sudo stat -c '%U:%G' /opt/twitchdiscordbot/data /opt/twitchdiscordbot/logs | sort -u)" = "twitchbot:twitchbot"
+          loose="$(sudo find /opt/twitchdiscordbot \( -path /opt/twitchdiscordbot/data -o -path /opt/twitchdiscordbot/logs \) \
+            -prune -o ! -type l \( ! -user root -o -perm /022 \) -print)"
+          if [ -n "$loose" ]; then echo "Not root-owned or writable by others: $loose"; exit 1; fi
           systemctl is-enabled twitchdiscordbot-update.timer
           for _ in $(seq 30); do
             sudo grep -q "Discord rejected the bot token" /opt/twitchdiscordbot/logs/bot.log 2>/dev/null && break
@@ -69,6 +75,12 @@ jobs:
           cd "$RUNNER_TEMP"/twitchdiscordbot-*/
           sudo ./install.sh --yes --skip-check || true
           sudo grep -q "ci-fake-token" /opt/twitchdiscordbot/.env
+          # Program files are root's and not writable by the bot user, which owns only data/ and logs/.
+          test "$(sudo stat -c '%U:%G %a' /opt/twitchdiscordbot)" = "root:root 755"
+          test "$(sudo stat -c '%U:%G' /opt/twitchdiscordbot/data /opt/twitchdiscordbot/logs | sort -u)" = "twitchbot:twitchbot"
+          loose="$(sudo find /opt/twitchdiscordbot \( -path /opt/twitchdiscordbot/data -o -path /opt/twitchdiscordbot/logs \) \
+            -prune -o ! -type l \( ! -user root -o -perm /022 \) -print)"
+          if [ -n "$loose" ]; then echo "Not root-owned or writable by others: $loose"; exit 1; fi
           # The upgrade keeps the auto-update choice and token; a check with a fake token fails without leaking it.
           systemctl is-enabled twitchdiscordbot-update.timer
           sudo grep -q "ci_fake_update_token" /opt/twitchdiscordbot/updater/github-token

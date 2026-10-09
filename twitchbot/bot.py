@@ -7,6 +7,7 @@ import asyncio
 import logging
 import sys
 import time
+from dataclasses import replace
 from logging.handlers import RotatingFileHandler
 
 import discord
@@ -46,10 +47,18 @@ def invite_url(application_id: int) -> str:
     return discord.utils.oauth_url(application_id, permissions=BOT_PERMISSIONS, scopes=("bot", "applications.commands"))
 
 
-MEMBERS_INTENT_HELP = (
-    'Discord refused the connection because the bot\'s "Server Members Intent" is turned off. Turn it on: '
+MEMBERS_INTENT_URL = (
     "https://discord.com/developers/applications -> your app -> Bot -> Privileged Gateway Intents -> "
-    "Server Members Intent, save, then start the bot again."
+    "Server Members Intent"
+)
+MEMBERS_INTENT_FALLBACK = (
+    'Discord refused the "Server Members Intent" (it is turned off for this bot), so update notices go to '
+    "server owners only; starting again without it. To reach server admins too, turn it on (%s), save and "
+    "restart the bot. To silence this warning, set UPDATE_NOTIFY=owner in %s."
+)
+PRIVILEGED_INTENTS_HELP = (
+    "Discord refused the connection because the bot requested a privileged gateway intent that is turned off. "
+    f"Turn it on ({MEMBERS_INTENT_URL}), save, then start the bot again."
 )
 
 COMMANDS_NOT_AUTHORIZED = (
@@ -66,7 +75,7 @@ class TwitchNotifierBot(discord.Client):
         intents = discord.Intents.none()
         intents.guilds = True  # guild/channel/role cache
         # Privileged "Server Members Intent" (enable it in the Developer Portal): finds server admins for update
-        # DMs, so it is only requested when UPDATE_NOTIFY=admins.
+        # DMs, so it is only requested when UPDATE_NOTIFY=admins. If it is off, run_bot() starts again without it.
         intents.members = config.update_notify == "admins"
         super().__init__(intents=intents, allowed_mentions=discord.AllowedMentions.none())
         self.config = config
@@ -117,8 +126,12 @@ class TwitchNotifierBot(discord.Client):
 
     async def close(self) -> None:
         self.poll_streams.cancel()
-        if self.twitch is not None:
-            await self.twitch.close()
+        twitch, self.twitch = self.twitch, None  # close it once, even if close() is called again
+        if twitch is not None:
+            try:
+                await twitch.close()
+            except Exception:
+                log.exception("Closing the Twitch client failed")
         await super().close()
 
     async def on_ready(self) -> None:
@@ -423,13 +436,33 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Configuration file: {config.env_file}")
         return 0 if print_results(asyncio.run(run_checks(config))) else 1
     setup_logging(config)
-    bot = TwitchNotifierBot(config)
     try:
-        bot.run(config.discord_token, log_handler=None)
+        bot = run_bot(config)
     except discord.LoginFailure:
         log.critical("Discord rejected the bot token; check DISCORD_TOKEN in %s", config.env_file)
         return 2
     except discord.PrivilegedIntentsRequired:
-        log.critical(MEMBERS_INTENT_HELP)
+        log.critical(PRIVILEGED_INTENTS_HELP)
         return 2
     return bot.exit_code
+
+
+def run_bot(config: Config) -> TwitchNotifierBot:
+    """Run the bot until it stops; returns the client that ran last (its exit_code is the process exit code).
+
+    With UPDATE_NOTIFY=admins the bot asks for the privileged Server Members intent. If it is turned off in the
+    Developer Portal, Discord refuses the connection: warn once and start a fresh client without it, which then
+    DMs update notices to server owners only. ``Client.run`` has fully closed the first client (gateway, HTTP
+    session and, through ``close()``, its Twitch client) before the exception gets here, so only one Twitch
+    client exists at a time. A second failure is fatal like any other.
+    """
+    bot = TwitchNotifierBot(config)
+    try:
+        bot.run(config.discord_token, log_handler=None)
+    except discord.PrivilegedIntentsRequired:
+        if config.update_notify != "admins":
+            raise
+        log.warning(MEMBERS_INTENT_FALLBACK, MEMBERS_INTENT_URL, config.env_file)
+        bot = TwitchNotifierBot(replace(config, update_notify="owner"))
+        bot.run(config.discord_token, log_handler=None)
+    return bot

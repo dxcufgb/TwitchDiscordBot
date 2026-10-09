@@ -347,7 +347,8 @@ function Set-Configuration {
     Write-Host ''
     Write-Host 'Credentials (input for secrets is hidden):'
     Write-Host '  * Discord bot token:  https://discord.com/developers/applications -> your app -> Bot -> Reset Token'
-    Write-Host '    On the same Bot page, turn on "Server Members Intent" (Privileged Gateway Intents); the bot needs it.'
+    Write-Host '    Recommended: on the same Bot page turn on "Server Members Intent" (Privileged Gateway Intents) so update'
+    Write-Host '    notices reach server admins too; without it they go to server owners only.'
     Write-Host '  * Twitch Client ID and secret: https://dev.twitch.tv/console/apps -> your app -> Manage'
     $values = [ordered]@{
         DISCORD_TOKEN     = Read-Value 'DISCORD_TOKEN' 'Discord bot token' $true $true

@@ -20,6 +20,7 @@ class CheckResult:
     name: str
     ok: bool
     detail: str
+    warning: bool = False  # ok, but worth reading (does not fail the check)
 
 
 async def check_discord(token: str) -> CheckResult:
@@ -56,16 +57,19 @@ async def check_twitch(app_id: str, app_secret: str) -> CheckResult:
 MEMBERS_INTENT_FLAGS = (1 << 14) | (1 << 15)  # GATEWAY_GUILD_MEMBERS, GATEWAY_GUILD_MEMBERS_LIMITED
 
 
+MEMBERS_INTENT_NAME = "Server Members Intent"
+MEMBERS_INTENT_OFF = (
+    "turned off, so update notices go to server owners only (the bot starts without it). To reach server admins "
+    "too, turn it on: https://discord.com/developers/applications -> your app -> Bot -> Privileged Gateway Intents. "
+    "Or set UPDATE_NOTIFY=owner to silence this."
+)
+
+
 def members_intent_result(flags: int) -> CheckResult:
-    name = "Server Members Intent"
+    """Only checked with UPDATE_NOTIFY=admins. Missing is a warning: the bot falls back to owner-only notices."""
     if flags & MEMBERS_INTENT_FLAGS:
-        return CheckResult(name, True, "enabled")
-    return CheckResult(
-        name,
-        False,
-        "turned off, so Discord will refuse the connection. Turn it on: "
-        "https://discord.com/developers/applications -> your app -> Bot -> Privileged Gateway Intents",
-    )
+        return CheckResult(MEMBERS_INTENT_NAME, True, "enabled")
+    return CheckResult(MEMBERS_INTENT_NAME, True, MEMBERS_INTENT_OFF, warning=True)
 
 
 async def check_members_intent(token: str) -> CheckResult:
@@ -76,10 +80,10 @@ async def check_members_intent(token: str) -> CheckResult:
             session.get(f"{DISCORD_API}/applications/@me", headers={"Authorization": f"Bot {token}"}) as resp,
         ):
             if resp.status != 200:
-                return CheckResult("Server Members Intent", False, f"could not check (HTTP {resp.status})")
+                return CheckResult(MEMBERS_INTENT_NAME, True, f"could not check (HTTP {resp.status})", warning=True)
             flags = int((await resp.json()).get("flags") or 0)
     except (aiohttp.ClientError, asyncio.TimeoutError, ValueError, AttributeError) as exc:
-        return CheckResult("Server Members Intent", False, f"could not check ({type(exc).__name__})")
+        return CheckResult(MEMBERS_INTENT_NAME, True, f"could not check ({type(exc).__name__})", warning=True)
     return members_intent_result(flags)
 
 
@@ -130,5 +134,6 @@ async def run_checks(config: Config) -> list[CheckResult]:
 
 def print_results(results: list[CheckResult]) -> bool:
     for result in results:
-        print(f"[{'OK' if result.ok else 'FAIL'}] {result.name}: {result.detail}")
+        status = "FAIL" if not result.ok else "WARN" if result.warning else "OK"
+        print(f"[{status}] {result.name}: {result.detail}")
     return all(r.ok for r in results)
