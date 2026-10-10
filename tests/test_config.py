@@ -12,6 +12,7 @@ KEYS = (
     "POLL_INTERVAL",
     "OWNER_ID",
     "DATA_DIR",
+    "UPDATE_NOTIFY",
 )
 
 
@@ -51,5 +52,20 @@ def test_missing(tmp_path):
 def test_bad_interval(tmp_path):
     env = tmp_path / ".env"
     env.write_text("TOKEN=a\nTWITCH_APP_ID=i\nTWITCH_APP_SECRET=s\nPOLL_INTERVAL=5\n")
+    with pytest.raises(ConfigError):
+        load_config(env)
+
+
+def test_update_notify_settings(tmp_path):
+    env = tmp_path / ".env"
+    env.write_text("DISCORD_TOKEN=t\nTWITCH_APP_ID=i\nTWITCH_APP_SECRET=s\n")
+    assert load_config(env).update_notify == "admins"
+    env.write_text("DISCORD_TOKEN=t\nTWITCH_APP_ID=i\nTWITCH_APP_SECRET=s\nUPDATE_NOTIFY=Owner\n")
+    assert load_config(env).update_notify == "owner"
+
+
+def test_update_notify_is_validated(tmp_path):
+    env = tmp_path / ".env"
+    env.write_text("DISCORD_TOKEN=t\nTWITCH_APP_ID=i\nTWITCH_APP_SECRET=s\nUPDATE_NOTIFY=everyone\n")
     with pytest.raises(ConfigError):
         load_config(env)

@@ -19,6 +19,11 @@
 .PARAMETER NoService     Don't register the scheduled task.
 .PARAMETER SkipCheck     Don't verify the credentials against Discord/Twitch.
 .PARAMETER Yes           Never prompt; credentials come from DISCORD_TOKEN, TWITCH_APP_ID, TWITCH_APP_SECRET (OWNER_ID optional).
+.PARAMETER AutoUpdate    Also turn on automatic updates (daily scheduled task running as SYSTEM). The GitHub token comes
+                         from the UPDATE_GITHUB_TOKEN environment variable or a prompt.
+.PARAMETER NoAutoUpdate  Turn automatic updates off. Without -AutoUpdate/-NoAutoUpdate an upgrade keeps the current choice.
+.PARAMETER EnableAutoUpdate   Only turn on automatic updates (or replace the stored token), then exit.
+.PARAMETER DisableAutoUpdate  Only turn off automatic updates and delete the stored token, then exit.
 #>
 [CmdletBinding()]
 param(
@@ -30,7 +35,11 @@ param(
     [switch]$Purge,
     [switch]$NoService,
     [switch]$SkipCheck,
-    [switch]$Yes
+    [switch]$Yes,
+    [switch]$AutoUpdate,
+    [switch]$NoAutoUpdate,
+    [switch]$EnableAutoUpdate,
+    [switch]$DisableAutoUpdate
 )
 $ErrorActionPreference = 'Stop'
 $TaskName = 'TwitchDiscordBot'
@@ -38,6 +47,9 @@ $SrcDir = $PSScriptRoot
 $InstallDir = $InstallDir.TrimEnd('\')
 $VenvPy = Join-Path $InstallDir '.venv\Scripts\python.exe'
 $EnvFile = Join-Path $InstallDir '.env'
+$UpdateTaskName = 'TwitchDiscordBot Update'
+$UpdaterDir = Join-Path $InstallDir 'updater'
+$TokenFile = Join-Path $UpdaterDir 'github-token'
 
 # Well-known SIDs (names are localized, SIDs are not).
 $SidAdmins = '*S-1-5-32-544'; $SidSystem = '*S-1-5-18'; $SidLocalService = '*S-1-5-19'
@@ -66,10 +78,85 @@ function Stop-Bot {
         Where-Object { $_.CommandLine -and $_.CommandLine -like "*$InstallDir*" } |
         ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 }
+function Confirm-No($question) {
+    # Default no, and no when not interactive.
+    if ($Yes) { return $false }
+    $reply = Read-Host "$question [y/N]"
+    return ($reply -match '^[Yy]')
+}
+
+# ------------------------------------------------------------------ automatic updates (opt-in)
+# A scheduled task runs auto-update.ps1 daily as SYSTEM. The repository is private, so it needs a GitHub token,
+# kept in updater\github-token, separate from .env and readable by Administrators and SYSTEM only.
+function Test-AutoUpdate {
+    return [bool](Get-ScheduledTask -TaskName $UpdateTaskName -ErrorAction SilentlyContinue)
+}
+function Protect-UpdaterDir {
+    New-Item -ItemType Directory -Force -Path $UpdaterDir | Out-Null
+    # No inherited access: the bot's account (LOCAL SERVICE) and normal users must not read the token.
+    Invoke-Native icacls @($UpdaterDir, '/inheritance:r', '/grant:r', "${SidAdmins}:(OI)(CI)F", "${SidSystem}:(OI)(CI)F", '/Q') | Out-Null
+    if (Test-Path $TokenFile) {
+        Invoke-Native icacls @($TokenFile, '/inheritance:r', '/grant:r', "${SidAdmins}:F", "${SidSystem}:F", '/Q') | Out-Null
+    }
+}
+function Save-UpdateToken {
+    $token = $env:UPDATE_GITHUB_TOKEN
+    if (-not $token -and (Test-Path $TokenFile) -and ($Yes -or -not (Confirm-No 'Replace the stored GitHub token?'))) {
+        Info 'Keeping the stored GitHub token'
+        return
+    }
+    if (-not $token) {
+        if ($Yes) { Fail 'Set the UPDATE_GITHUB_TOKEN environment variable to turn on automatic updates with -Yes.' }
+        Write-Host ''
+        Write-Host 'Automatic updates download new releases from the private GitHub repository dxcufgb/TwitchDiscordBot,'
+        Write-Host 'so they need a GitHub token (input is hidden). Create one at https://github.com/settings/personal-access-tokens:'
+        Write-Host 'Fine-grained token -> Resource owner dxcufgb -> Only select repositories: TwitchDiscordBot ->'
+        Write-Host 'Repository permissions: Contents = Read-only (nothing else). Pick an expiry date you will remember.'
+        $s = Read-Host -AsSecureString 'GitHub token'
+        $b = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($s)
+        try { $token = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($b) } finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($b) }
+    }
+    $token = "$token".Trim()
+    if (-not $token) { Fail 'A GitHub token is required for automatic updates.' }
+    if ($token -notmatch '^[A-Za-z0-9_]+$') { Fail 'That does not look like a GitHub token (letters, digits and _ only).' }
+    Protect-UpdaterDir
+    [IO.File]::WriteAllText($TokenFile, $token)
+    Protect-UpdaterDir
+    Info "Saved the GitHub token in $TokenFile (readable by Administrators and SYSTEM only)"
+}
+function Register-UpdateTask {
+    $script = Join-Path $InstallDir 'auto-update.ps1'
+    $ps = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    $updateAction = New-ScheduledTaskAction -Execute $ps -WorkingDirectory $env:SystemRoot `
+        -Argument "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$script`""
+    $updateTrigger = New-ScheduledTaskTrigger -Daily -At '04:00' -RandomDelay (New-TimeSpan -Hours 4)
+    $updatePrincipal = New-ScheduledTaskPrincipal -UserId (Get-AccountName $SidSystem) -LogonType ServiceAccount -RunLevel Highest
+    $updateSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable `
+        -RunOnlyIfNetworkAvailable -ExecutionTimeLimit (New-TimeSpan -Hours 1) -MultipleInstances IgnoreNew
+    Register-ScheduledTask -TaskName $UpdateTaskName -Action $updateAction -Trigger $updateTrigger -Principal $updatePrincipal `
+        -Settings $updateSettings -Description 'TwitchDiscordBot - installs new releases (automatic updates)' -Force | Out-Null
+}
+function Enable-AutoUpdate {
+    if (-not (Test-Path (Join-Path $InstallDir 'auto-update.ps1'))) {
+        Fail "$InstallDir has no auto-update.ps1; install this release first (install.cmd -AutoUpdate)."
+    }
+    Save-UpdateToken
+    Protect-UpdaterDir
+    Register-UpdateTask
+    Info "Automatic updates are on: a newer release is installed daily (log: $UpdaterDir\update.log)."
+}
+function Disable-AutoUpdate {
+    Unregister-ScheduledTask -TaskName $UpdateTaskName -Confirm:$false -ErrorAction SilentlyContinue
+    if (Test-Path $UpdaterDir) { Remove-Item -Recurse -Force $UpdaterDir }
+}
 
 $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
 if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     Fail 'Please run as administrator (double-click install.cmd, or use an elevated PowerShell).'
+}
+
+if (($AutoUpdate -or $EnableAutoUpdate) -and $Yes -and -not $env:UPDATE_GITHUB_TOKEN -and -not (Test-Path $TokenFile)) {
+    Fail 'Set the UPDATE_GITHUB_TOKEN environment variable to turn on automatic updates with -Yes.'
 }
 
 # ------------------------------------------------------------------ stop / remove the task only
@@ -77,9 +164,22 @@ if ($StopService -or $RemoveService) {
     Info 'Stopping the bot'
     Stop-Bot
     if ($RemoveService) {
-        Info 'Removing the scheduled task'
+        Info 'Removing the scheduled tasks'
         Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
+        Unregister-ScheduledTask -TaskName $UpdateTaskName -Confirm:$false -ErrorAction SilentlyContinue
     }
+    exit 0
+}
+
+# ------------------------------------------------------------------ turn automatic updates on / off only
+if ($DisableAutoUpdate) {
+    Disable-AutoUpdate
+    Info 'Automatic updates are off and the GitHub token was deleted.'
+    exit 0
+}
+if ($EnableAutoUpdate) {
+    if (-not (Test-Path $VenvPy)) { Fail "TwitchDiscordBot is not installed in $InstallDir." }
+    Enable-AutoUpdate
     exit 0
 }
 
@@ -88,12 +188,13 @@ if ($Uninstall) {
     Info 'Stopping the bot'
     Stop-Bot
     Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
+    Unregister-ScheduledTask -TaskName $UpdateTaskName -Confirm:$false -ErrorAction SilentlyContinue
     if (Test-Path $InstallDir) {
         if ($Purge) {
             Info "Deleting $InstallDir (including settings, data and logs)"
             Remove-Item -Recurse -Force $InstallDir
         } else {
-            Info "Removing program files from $InstallDir (keeping .env, data and logs)"
+            Info "Removing program files from $InstallDir (keeping .env, data and logs; the GitHub token is deleted)"
             Get-ChildItem -Force $InstallDir | Where-Object { $_.Name -notin @('.env', 'data', 'logs') } |
                 Remove-Item -Recurse -Force
         }
@@ -155,6 +256,11 @@ if (-not $Reconfigure) {
     if (-not ((Test-Path (Join-Path $SrcDir 'Main.py')) -and (Test-Path (Join-Path $SrcDir 'twitchbot')))) {
         Fail 'Run this installer from the extracted release folder.'
     }
+    # Ask once, on a fresh interactive install; upgrades keep whatever was chosen before.
+    if (-not ($AutoUpdate -or $NoAutoUpdate) -and -not (Test-Path (Join-Path $InstallDir 'Main.py')) -and
+        (Confirm-No 'Install new releases automatically (daily; needs a read-only GitHub token)?')) {
+        $AutoUpdate = $true
+    }
     Stop-Bot
 
     # Import settings from an earlier install made from a git checkout (scripts\install-startup.ps1).
@@ -178,8 +284,8 @@ if (-not $Reconfigure) {
         $code = Join-Path $InstallDir 'twitchbot'
         if (Test-Path $code) { Remove-Item -Recurse -Force $code }
         Copy-Item -Recurse (Join-Path $SrcDir 'twitchbot') $InstallDir
-        foreach ($f in 'Main.py', 'requirements.txt', 'VERSION', '.env.example', 'start-bot.cmd', 'install.ps1',
-                       'install.cmd', 'uninstall.cmd', 'README.md') {
+        foreach ($f in 'Main.py', 'requirements.txt', 'VERSION', 'CHANGES.md', '.env.example', 'start-bot.cmd', 'install.ps1',
+                       'install.cmd', 'uninstall.cmd', 'auto-update.ps1', 'README.md') {
             $p = Join-Path $SrcDir $f
             if (Test-Path $p) { Copy-Item -Force $p $InstallDir }
         }
@@ -241,6 +347,8 @@ function Set-Configuration {
     Write-Host ''
     Write-Host 'Credentials (input for secrets is hidden):'
     Write-Host '  * Discord bot token:  https://discord.com/developers/applications -> your app -> Bot -> Reset Token'
+    Write-Host '    Recommended: on the same Bot page turn on "Server Members Intent" (Privileged Gateway Intents) so update'
+    Write-Host '    notices reach server admins too; without it they go to server owners only.'
     Write-Host '  * Twitch Client ID and secret: https://dev.twitch.tv/console/apps -> your app -> Manage'
     $values = [ordered]@{
         DISCORD_TOKEN     = Read-Value 'DISCORD_TOKEN' 'Discord bot token' $true $true
@@ -291,6 +399,24 @@ if (-not $SkipCheck) {
     }
 }
 
+# ------------------------------------------------------------------ automatic updates
+if ($AutoUpdate) {
+    Enable-AutoUpdate
+} elseif ($NoAutoUpdate) {
+    if ((Test-AutoUpdate) -or (Test-Path $UpdaterDir)) {
+        Disable-AutoUpdate
+        Info 'Automatic updates are off and the GitHub token was deleted.'
+    }
+} elseif (Test-AutoUpdate) {
+    if (Test-Path $TokenFile) {
+        Protect-UpdaterDir
+        Register-UpdateTask  # refresh the task; the choice and the token stay as they are
+        Info "Keeping automatic updates on (turn off: $InstallDir\install.cmd -DisableAutoUpdate)"
+    } else {
+        Warn "Automatic updates are on but $TokenFile is missing; run: $InstallDir\install.cmd -EnableAutoUpdate"
+    }
+}
+
 # ------------------------------------------------------------------ service
 if ($NoService) {
     Info "Done. Start the bot with: `"$InstallDir\start-bot.cmd`" --watch"
@@ -333,6 +459,7 @@ Write-Host @"
   Change creds:  $InstallDir\install.cmd -Reconfigure
   Upgrade:       run install.cmd from a newer release folder
   Uninstall:     $InstallDir\uninstall.cmd   (add -Purge to delete settings and data)
+  Auto-update:   $InstallDir\install.cmd -EnableAutoUpdate   or   -DisableAutoUpdate
 
 Next, in Discord: /setup channel, then /stream add <twitch name>.
 "@

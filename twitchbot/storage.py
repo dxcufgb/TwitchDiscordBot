@@ -3,7 +3,8 @@
 Layout of ``state.json``::
 
     {
-      "version": 2,
+      "version": 3,
+      "bot_version": "2.2.0" | null,   # bot version that last ran (update DMs); added in schema 3
       "guilds": {
         "<guild id>": {
           "channel_id": 123 | null,
@@ -35,7 +36,7 @@ from pathlib import Path
 
 log = logging.getLogger(__name__)
 
-STATE_VERSION = 2
+STATE_VERSION = 3  # 2 -> 3: added "bot_version"; older files load unchanged
 LOGIN_RE = re.compile(r"^[a-z0-9_]{1,25}$")
 
 
@@ -120,6 +121,8 @@ class StateStore:
     def __init__(self, path: Path) -> None:
         self.path = path
         self.guilds: dict[int, GuildState] = {}
+        # Version of the bot that last ran with this state; None until recorded (fresh or older state file).
+        self.bot_version: str | None = None
 
     # ---- access -------------------------------------------------------
     def guild(self, guild_id: int) -> GuildState:
@@ -147,6 +150,7 @@ class StateStore:
     def to_dict(self) -> dict:
         return {
             "version": STATE_VERSION,
+            "bot_version": self.bot_version,
             "guilds": {str(gid): g.to_dict() for gid, g in sorted(self.guilds.items())},
         }
 
@@ -157,6 +161,8 @@ class StateStore:
         with self.path.open(encoding="utf-8") as f:
             data = json.load(f)
         self.guilds = {int(gid): GuildState.from_dict(g) for gid, g in (data.get("guilds") or {}).items()}
+        bot_version = data.get("bot_version")
+        self.bot_version = bot_version if isinstance(bot_version, str) and bot_version else None
         return True
 
     def save(self) -> None:

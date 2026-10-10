@@ -9,6 +9,7 @@ from pathlib import Path
 from dotenv import dotenv_values
 
 BASE_DIR = Path(__file__).resolve().parent.parent
+UPDATE_NOTIFY_CHOICES = ("admins", "owner", "off")
 
 
 def _first(env: dict[str, str | None], *names: str) -> str | None:
@@ -34,6 +35,8 @@ class Config:
     env_file: Path
     # Raw .env contents, used once to migrate legacy STREAMS-CHANNEL-<guild> entries.
     legacy_env: dict[str, str]
+    # Who gets a DM after the bot was updated: "admins" (owner + administrators), "owner" or "off".
+    update_notify: str = "admins"
 
 
 class ConfigError(RuntimeError):
@@ -74,6 +77,10 @@ def load_config(env_file: Path | None = None) -> Config:
     if poll_interval < 15:
         raise ConfigError("POLL_INTERVAL must be at least 15 seconds")
 
+    update_notify = (_first(env, "UPDATE_NOTIFY") or "admins").lower()
+    if update_notify not in UPDATE_NOTIFY_CHOICES:
+        raise ConfigError(f"UPDATE_NOTIFY must be one of {', '.join(UPDATE_NOTIFY_CHOICES)}, got {update_notify!r}")
+
     data_dir = Path(_first(env, "DATA_DIR") or BASE_DIR / "data")
     log_dir = Path(_first(env, "LOG_DIR") or BASE_DIR / "logs")
     if not data_dir.is_absolute():
@@ -93,4 +100,5 @@ def load_config(env_file: Path | None = None) -> Config:
         dev_guild_id=_int("DEV_GUILD_ID", None),
         env_file=env_file,
         legacy_env={k: v for k, v in file_values.items()},
+        update_notify=update_notify,
     )
