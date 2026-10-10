@@ -18,7 +18,24 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Fails within seconds (instead of after the whole CI) when a pushed tag does not match the version.
+  version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check the tag against twitchbot.__version__
+        if: github.event_name == 'push'
+        run: |
+          version="$(python3 -c 'import twitchbot; print(twitchbot.__version__)')"
+          if [[ "$GITHUB_REF_NAME" != "v$version" ]]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match twitchbot.__version__ $version. Bump the version in twitchbot/__init__.py and pyproject.toml, merge it, delete the tag (and any release made for it on GitHub) and release again."
+            exit 1
+          fi
+
   ci:
+    needs: version
     uses: ./.github/workflows/ci.yml
 
   release:
