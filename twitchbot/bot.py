@@ -7,9 +7,12 @@ import asyncio
 import logging
 import sys
 import time
+from collections.abc import Coroutine
 from dataclasses import replace
 from logging.handlers import RotatingFileHandler
+from typing import Any
 
+import aiohttp
 import discord
 from discord import app_commands
 from discord.ext import tasks
@@ -18,6 +21,7 @@ from twitchAPI.object.api import TwitchUser
 from twitchAPI.twitch import Twitch
 
 from . import __version__
+from .command_sync import sync_commands
 from .config import BASE_DIR, Config, ConfigError, load_config
 from .notify import Announcement, LiveInfo, chunked, plan_announcements
 from .storage import StateStore, TrackedStream, migrate_legacy
@@ -97,24 +101,18 @@ class TwitchNotifierBot(discord.Client):
         from .commands import register_commands
 
         register_commands(self)
-        await self._sync_commands()
-        self.poll_streams.start()
-
-    async def _sync_commands(self) -> None:
-        try:
-            if self.config.dev_guild_id:
-                guild = discord.Object(id=self.config.dev_guild_id)
-                self.tree.copy_global_to(guild=guild)
-                synced = await self.tree.sync(guild=guild)
-            else:
-                synced = await self.tree.sync()
-            log.info("Synced %d slash command(s)", len(synced))
-        except discord.HTTPException:
-            log.exception("Failed to sync slash commands")
+        # Registering runs (and retries) in the background so that monitoring isn't held up by it.
+        self._start_background(sync_commands(self))
         if self.application_id:
             log.info(
                 "Invite / re-authorize link (adds slash commands to a server): %s", invite_url(self.application_id)
             )
+        self.poll_streams.start()
+
+    def _start_background(self, coro: Coroutine[Any, Any, object]) -> None:
+        task = asyncio.create_task(coro)
+        self._background.add(task)
+        task.add_done_callback(self._background.discard)
 
     def _load_state(self) -> None:
         if self.store.load():
@@ -146,9 +144,7 @@ class TwitchNotifierBot(discord.Client):
         # on_ready fires again after reconnects; once per process is enough for both checks.
         if not self._update_check_started:
             self._update_check_started = True
-            task = asyncio.create_task(self.announce_update())
-            self._background.add(task)
-            task.add_done_callback(self._background.discard)
+            self._start_background(self.announce_update())
         if not self._checked_command_access:
             self._checked_command_access = True
             for guild in list(self.guilds):
@@ -422,6 +418,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--check", action="store_true", help="verify .env and the Discord/Twitch credentials, then exit"
     )
+    parser.add_argument(
+        "--sync-commands",
+        action="store_true",
+        help="register the slash commands with Discord, then exit (the installers run this after an update)",
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -435,6 +436,11 @@ def main(argv: list[str] | None = None) -> int:
 
         print(f"Configuration file: {config.env_file}")
         return 0 if print_results(asyncio.run(run_checks(config))) else 1
+    if args.sync_commands:
+        # Console only: the installers run this as another account than the bot, so it must not create log files.
+        logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s", stream=sys.stdout)
+        logging.getLogger("discord").setLevel(logging.ERROR)  # no "voice will NOT be supported" noise
+        return asyncio.run(register_commands_once(config))
     setup_logging(config)
     try:
         bot = run_bot(config)
@@ -468,3 +474,42 @@ def run_bot(config: Config) -> TwitchNotifierBot:
         bot = TwitchNotifierBot(replace(config, update_notify="owner"))
         bot.run(config.discord_token, log_handler=None)
     return bot
+
+
+class _CommandRegistrar(TwitchNotifierBot):
+    """Client for ``--sync-commands``: logs in over HTTP only (no gateway, no Twitch client)."""
+
+    async def setup_hook(self) -> None:
+        pass
+
+
+SYNC_TIMEOUT = 60  # seconds, for each of logging in and registering
+
+
+async def register_commands_once(config: Config) -> int:
+    """Register the slash commands once, for the installers. Exit code 0 = registered.
+
+    Reads ``state.json`` (to clean up a scope that ``DEV_GUILD_ID`` no longer uses) but never writes it: the
+    installers may run this as another account than the bot, and the bot records the registration at start.
+    """
+    from .commands import register_commands
+
+    client = _CommandRegistrar(config)
+    try:
+        client.store.load()
+    except (OSError, ValueError):
+        log.warning("Could not read %s; registering without it", client.store.path)
+    register_commands(client)
+    try:
+        async with client:
+            await asyncio.wait_for(client.login(config.discord_token), SYNC_TIMEOUT)
+            ok = await asyncio.wait_for(sync_commands(client, delays=(), persist=False), SYNC_TIMEOUT)
+    except discord.LoginFailure:
+        # Names the .env file, never the token.
+        # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
+        log.error("Discord refused the login; check DISCORD_TOKEN in %s", config.env_file)
+        return 2
+    except (discord.HTTPException, aiohttp.ClientError, OSError, asyncio.TimeoutError) as exc:
+        log.error("Could not reach Discord: %s", exc or type(exc).__name__)
+        return 1
+    return 0 if ok else 1
