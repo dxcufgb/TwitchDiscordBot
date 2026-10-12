@@ -542,6 +542,13 @@ if [[ $SKIP_CHECK -eq 0 ]]; then
     done
 fi
 
+# A new version's slash commands only show up in Discord once they are registered; the bot also does this at
+# every start (with retries), so a failure here is not fatal.
+info "Registering the slash commands with Discord"
+if ! (cd "$PREFIX" && as_bot "$VENV_PY" Main.py --sync-commands); then
+    warn "Could not register the slash commands now; the bot registers them again every time it starts."
+fi
+
 # ---------------------------------------------------------------- automatic updates
 if [[ $AUTO_UPDATE == 1 ]]; then
     enable_auto_update
