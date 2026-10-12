@@ -157,7 +157,7 @@ token_from_environment() {
     (umask 077 && printf '%s\n' "$token" >"$TOKEN_FILE")  # printf is a builtin: not in any process list
 }
 
-# shellcheck disable=SC2329  # called from the EXIT traps
+# shellcheck disable=SC2317,SC2329  # called from the EXIT traps (SC2317 on older shellcheck)
 remove_token_copy() {
     if [[ -n $TOKEN_TMP_DIR ]]; then rm -rf "$TOKEN_TMP_DIR"; fi
 }
