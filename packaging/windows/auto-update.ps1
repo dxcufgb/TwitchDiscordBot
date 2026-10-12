@@ -8,9 +8,9 @@
         powershell -ExecutionPolicy Bypass -File C:\ProgramData\TwitchDiscordBot\auto-update.ps1          update now
         powershell -ExecutionPolicy Bypass -File C:\ProgramData\TwitchDiscordBot\auto-update.ps1 -Check   only report
 
-    It downloads the newest release's -windows.zip, verifies it against SHA256SUMS.txt and runs that release's
-    install.ps1 (the normal upgrade path, which keeps .env, data and logs). If the upgrade fails, the previous
-    program files are restored and the bot is started again; if that rollback fails too, the log says
+    It downloads the newest release's twitchdiscordbot-X.Y.Z-windows.zip, verifies it against SHA256SUMS.txt and
+    runs that release's install.ps1 (the normal upgrade path, which keeps .env, data and logs). If the upgrade
+    fails, the previous program files are restored and the bot is started again; if that rollback fails too, the log says
     "ROLLBACK FAILED", the backup is kept in <install folder>\updater\rollback-backup-<time> and the exit code is 1.
     Log: <install folder>\updater\update.log
 

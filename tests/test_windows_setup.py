@@ -25,7 +25,12 @@ def test_crlf_and_ascii():
 
 def test_packaged_files_exist():
     base = ISS.parent
-    for source in re.findall(r'^Source: "([^"]+)"', ISS.read_text(encoding="ascii"), re.M):
+    text = ISS.read_text(encoding="ascii")
+    # Without /DCodeDir= (the stamped package from build_release.py --code-dir) the repository's package is used.
+    code_dir = re.search(r'^\s*#define CodeDir "([^"]+)"', text, re.M).group(1)
+    assert code_dir == "..\\..\\twitchbot"
+    for source in re.findall(r'^Source: "([^"]+)"', text, re.M):
+        source = source.replace("{#CodeDir}", code_dir)
         matches = list(base.glob(source.replace("\\", "/")))
         assert matches, f"[Files] source not found: {source}"
 
@@ -112,3 +117,9 @@ def test_rollbacks_are_verified():
         assert "ROLLBACK FAILED" in text
     assert "verify_rollback" in linux and "trap - EXIT" in linux
     assert "Test-BotRunning" in windows and "$keepWork" in windows
+
+
+def test_setup_uses_the_unified_name_and_the_stamped_package():
+    text = ISS.read_text(encoding="ascii")
+    assert re.search(r"^OutputBaseFilename=twitchdiscordbot-\{#AppVersion\}-setup\r?$", text, re.M)
+    assert re.search(r'^Source: "\{#CodeDir\}\\\*\.py"; DestDir: "\{app\}\\twitchbot"', text, re.M)

@@ -1,8 +1,11 @@
 ; TwitchDiscordBot setup wizard (Inno Setup 6).
 ;
 ; Build (Windows, Inno Setup 6 installed):
-;   "%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe" /DAppVersion=2.0.1 packaging\windows\TwitchDiscordBot.iss
-; Output: dist\twitchdiscordbot-<version>-windows-setup.exe
+;   python scripts\build_release.py --version 2.0.1 --code-dir build\twitchbot
+;   "%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe" /DAppVersion=2.0.1 /DCodeDir=%CD%\build\twitchbot packaging\windows\TwitchDiscordBot.iss
+; Output: dist\twitchdiscordbot-<version>-setup.exe (build_release.py --setup-exe adds it to a release)
+; CodeDir is the twitchbot package with the release version stamped into __init__.py; without it the
+; repository's own twitchbot folder is used (its version is the previous release's).
 ;
 ; The wizard asks for the credentials and checks them. install.ps1 then does the actual work
 ; (Python, virtual environment, permissions, scheduled task), exactly as for the zip release.
@@ -17,6 +20,9 @@
 
 #ifndef AppVersion
   #error Pass the version, e.g. ISCC /DAppVersion=2.0.1 TwitchDiscordBot.iss
+#endif
+#ifndef CodeDir
+  #define CodeDir "..\..\twitchbot"
 #endif
 #define AppName "TwitchDiscordBot"
 
@@ -40,7 +46,7 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0
 OutputDir=..\..\dist
-OutputBaseFilename=twitchdiscordbot-{#AppVersion}-windows-setup
+OutputBaseFilename=twitchdiscordbot-{#AppVersion}-setup
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
@@ -57,7 +63,7 @@ WelcomeLabel2=This will install [name/ver] on your computer.%n%nThe bot runs in 
 Name: "autoupdate"; Description: "Install new releases &automatically (daily; needs a read-only GitHub token)"; Flags: unchecked
 
 [Files]
-Source: "..\..\twitchbot\*.py"; DestDir: "{app}\twitchbot"; Flags: ignoreversion
+Source: "{#CodeDir}\*.py"; DestDir: "{app}\twitchbot"; Flags: ignoreversion
 Source: "..\..\Main.py"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\requirements.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\.env.example"; DestDir: "{app}"; Flags: ignoreversion

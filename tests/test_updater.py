@@ -195,6 +195,26 @@ def test_download_verifies_and_extracts(install, tmp_path, capsys):
     }
 
 
+def test_release_with_unified_names_uses_the_versioned_archive(install, tmp_path, capsys):
+    # Releases now also carry fixed-name copies, the setup wizard and legacy names, all listed in SHA256SUMS.txt.
+    # The updater keeps downloading <name>-X.Y.Z-linux.tar.gz and verifying it against SHA256SUMS.txt.
+    fake = FakeGitHub()
+    extra = [
+        "twitchdiscordbot-linux.tar.gz",
+        "twitchdiscordbot-2.2.0-setup.exe",
+        "twitchdiscordbot-2.2.0-windows-setup.exe",
+    ]
+    for number, name in enumerate(extra, 10):
+        fake.release["assets"].insert(0, {"name": name, "url": f"{API}/releases/assets/{number}"})
+        fake.files[f"{CDN}/{number}"] = b"not the archive"
+    sums = fake.files[f"{CDN}/2"].decode()
+    sums += "".join(f"{hashlib.sha256(b'not the archive').hexdigest()}  {name}\n" for name in extra)
+    fake.files[f"{CDN}/2"] = sums.encode()
+    assert run(install, fake, "download", "--dest", str(tmp_path / "work")) == updater.EXIT_OK
+    fetched = {url.rsplit("/", 1)[1] for url, _ in fake.calls if "/releases/assets/" in url}
+    assert fetched == {"1", "2"}
+
+
 def test_windows_asset(install, tmp_path, capsys):
     folder, token = install
     fake = FakeGitHub()

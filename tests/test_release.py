@@ -7,6 +7,8 @@ import tarfile
 import zipfile
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parent.parent
 
 from twitchbot import __version__  # noqa: E402
@@ -15,14 +17,12 @@ CODE = {f"twitchbot/{p.name}" for p in (ROOT / "twitchbot").glob("*.py")}
 COMMON = CODE | {"Main.py", "requirements.txt", ".env.example", "README.md", "VERSION", "CHANGES.md"}
 
 
-def build(tmp_path):
-    subprocess.run(
-        [sys.executable, "scripts/build_release.py", "--out", str(tmp_path), "--expect-version", f"v{__version__}"],
-        cwd=ROOT,
-        check=True,
-        capture_output=True,
-    )
-    prefix = f"twitchdiscordbot-{__version__}"
+def build(tmp_path, *extra, version=None):
+    args = ["--out", str(tmp_path), *extra]
+    if version:
+        args += ["--version", version]
+    subprocess.run([sys.executable, "scripts/build_release.py", *args], cwd=ROOT, check=True, capture_output=True)
+    prefix = f"twitchdiscordbot-{(version or __version__).removeprefix('v')}"
     return prefix, tmp_path / f"{prefix}-linux.tar.gz", tmp_path / f"{prefix}-windows.zip"
 
 
@@ -47,7 +47,62 @@ def test_archive_contents(tmp_path):
             assert data.count(b"\n") == data.count(b"\r\n"), f"{script} must use CRLF line endings"
 
     sums = (tmp_path / "SHA256SUMS.txt").read_text().splitlines()
-    assert [line.split()[1] for line in sums] == [linux.name, windows.name]
+    assert [line.split()[1] for line in sums] == [
+        linux.name,
+        windows.name,
+        "twitchdiscordbot-linux.tar.gz",
+        "twitchdiscordbot-windows.zip",
+    ]
+
+
+def test_version_is_stamped_from_the_argument(tmp_path):
+    # The release workflow passes the version from the tag; the repository itself is not changed.
+    before = (ROOT / "twitchbot" / "__init__.py").read_bytes()
+    prefix, linux, windows = build(tmp_path, version="v9.9.9")
+    assert prefix == "twitchdiscordbot-9.9.9"
+    assert (ROOT / "twitchbot" / "__init__.py").read_bytes() == before
+    with tarfile.open(linux) as tar:
+        assert tar.extractfile(f"{prefix}/VERSION").read() == b"9.9.9\n"
+        init = tar.extractfile(f"{prefix}/twitchbot/__init__.py").read().decode()
+        assert '__version__ = "9.9.9"' in init
+        assert tar.extractfile(f"{prefix}/CHANGES.md").read().decode().startswith("# TwitchDiscordBot 9.9.9\n")
+        assert {m.name.split("/")[0] for m in tar.getmembers()} == {prefix}
+    with zipfile.ZipFile(windows) as zf:
+        assert '__version__ = "9.9.9"' in zf.read(f"{prefix}/twitchbot/__init__.py").decode()
+        assert zf.read(f"{prefix}/VERSION") == b"9.9.9\n"
+
+
+def test_release_files_fixed_and_legacy_names(tmp_path):
+    setup = tmp_path / "Output.exe"
+    setup.write_bytes(b"MZ fake setup")
+    code = tmp_path / "code"
+    out = tmp_path / "dist"
+    build(out, "--setup-exe", str(setup), "--code-dir", str(code), version="9.9.9-rc.1")
+    names = {
+        "twitchdiscordbot-9.9.9-rc.1-linux.tar.gz",
+        "twitchdiscordbot-9.9.9-rc.1-windows.zip",
+        "twitchdiscordbot-9.9.9-rc.1-setup.exe",
+        "twitchdiscordbot-linux.tar.gz",
+        "twitchdiscordbot-windows.zip",
+        "twitchdiscordbot-setup.exe",
+        "twitchdiscordbot-9.9.9-rc.1-windows-setup.exe",  # legacy name (releases up to 2.2.0)
+    }
+    assert {p.name for p in out.iterdir()} == names | {"SHA256SUMS.txt", "RELEASE_NOTES.md"}
+    sums = {}
+    for line in (out / "SHA256SUMS.txt").read_text().splitlines():
+        digest, name = line.split("  ")
+        sums[name] = digest
+    assert set(sums) == names
+    for name, digest in sums.items():
+        assert hashlib.sha256((out / name).read_bytes()).hexdigest() == digest, name
+    for kind in ("linux.tar.gz", "windows.zip", "setup.exe"):
+        assert sums[f"twitchdiscordbot-{kind}"] == sums[f"twitchdiscordbot-9.9.9-rc.1-{kind}"]
+    assert sums["twitchdiscordbot-9.9.9-rc.1-windows-setup.exe"] == hashlib.sha256(b"MZ fake setup").hexdigest()
+    # The stamped package for the Inno Setup build.
+    assert {p.name for p in code.iterdir()} == {p.split("/")[1] for p in CODE}
+    assert '__version__ = "9.9.9-rc.1"' in (code / "__init__.py").read_text()
+    notes = (out / "RELEASE_NOTES.md").read_text()
+    assert "twitchdiscordbot-9.9.9-rc.1-setup.exe" in notes and "sudo bash -s twitchdiscordbot" in notes
 
 
 def test_checksums_match_what_the_updater_expects(tmp_path):
@@ -62,21 +117,22 @@ def test_checksums_match_what_the_updater_expects(tmp_path):
 
 
 def test_reproducible(tmp_path):
-    _, linux_a, windows_a = build(tmp_path / "a")
-    _, linux_b, windows_b = build(tmp_path / "b")
+    _, linux_a, windows_a = build(tmp_path / "a", version="9.9.9")
+    _, linux_b, windows_b = build(tmp_path / "b", version="9.9.9")
     assert linux_a.read_bytes() == linux_b.read_bytes()
     assert windows_a.read_bytes() == windows_b.read_bytes()
 
 
-def test_wrong_tag_is_rejected(tmp_path):
+@pytest.mark.parametrize("bad", ["1.2", "01.2.3", "1.2.3+build", "1.2.3-", "latest", "v"])
+def test_invalid_version_is_rejected(tmp_path, bad):
     result = subprocess.run(
-        [sys.executable, "scripts/build_release.py", "--out", str(tmp_path), "--expect-version", "v0.0.0"],
+        [sys.executable, "scripts/build_release.py", "--out", str(tmp_path), "--version", bad],
         cwd=ROOT,
         capture_output=True,
         text=True,
     )
     assert result.returncode != 0
-    assert "does not match" in result.stderr
+    assert "Not a release version" in result.stderr
 
 
 def test_updater_accepts_the_real_archives(tmp_path):
