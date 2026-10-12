@@ -439,6 +439,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         bot = run_bot(config)
     except discord.LoginFailure:
+        # Logs the path of the .env file, never the token. CI greps this exact text.
+        # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
         log.critical("Discord rejected the bot token; check DISCORD_TOKEN in %s", config.env_file)
         return 2
     except discord.PrivilegedIntentsRequired:
