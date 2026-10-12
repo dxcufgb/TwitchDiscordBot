@@ -33,7 +33,7 @@ an update.
 - `pytest` (`asyncio_mode = "auto"`; fakes such as `FakeTwitch`, no network)
 - CI tests Python 3.10–3.14 and really installs, upgrades and uninstalls on Linux and Windows.
 - `python scripts/build_release.py --version 9.9.9` builds the release files into `dist/`.
-- Security (`.github/workflows/security.yml`, required checks `Secrets (gitleaks)`, `Code (Semgrep)`, `Dependencies`; push to main, PRs, weekly): locally `gitleaks git --redact .`, `semgrep scan --metrics=off --error --severity WARNING --severity ERROR --config p/python --config p/javascript --config p/security-audit --config p/secrets --config p/github-actions --config r/bash`, and `pip-audit --strict -r requirements.txt` and `pip-audit -r requirements-dev.txt`. False positives: `# nosemgrep: <rule-id>` + reason, or `.gitleaks.toml`.
+- Security (`.github/workflows/security.yml`, required checks `Secrets (gitleaks)`, `Code (Semgrep)`, `Dependencies`; push to main, PRs, weekly): locally `gitleaks git --redact .`, `semgrep scan --metrics=off --error --severity WARNING --severity ERROR --config p/python --config p/javascript --config p/security-audit --config p/secrets --config p/github-actions --config r/bash`, and `pip-audit --strict -r requirements.txt` and `pip-audit --strict -r requirements-dev.txt`. False positives: `# nosemgrep: <rule-id>` (Python, shell) on or above the line, with a reason; gitleaks: `.gitleaks.toml`.
 
 ## Install on Linux
 `curl -fsSL https://raw.githubusercontent.com/dxcufgb/install/main/install.sh | sudo bash -s twitchdiscordbot`
