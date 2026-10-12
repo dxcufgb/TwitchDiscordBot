@@ -125,13 +125,16 @@ def test_reproducible(tmp_path):
 
 def test_code_dir_is_never_the_source_package_and_drops_stale_modules(tmp_path):
     before = (ROOT / "twitchbot" / "__init__.py").read_bytes()
-    result = subprocess.run(
-        [sys.executable, "scripts/build_release.py", "--out", str(tmp_path / "d"), "--version", "9.9.9",
-         "--code-dir", "twitchbot"],
-        cwd=ROOT, capture_output=True, text=True,
-    )  # fmt: skip
-    assert result.returncode != 0 and "--code-dir" in result.stderr
+    main_py = (ROOT / "Main.py").read_bytes()
+    for bad in ("twitchbot", ".", "..", "scripts", "build"):
+        result = subprocess.run(
+            [sys.executable, "scripts/build_release.py", "--out", str(tmp_path / "d"), "--version", "9.9.9",
+             "--code-dir", bad],
+            cwd=ROOT, capture_output=True, text=True,
+        )  # fmt: skip
+        assert result.returncode != 0 and "--code-dir" in result.stderr, bad
     assert (ROOT / "twitchbot" / "__init__.py").read_bytes() == before
+    assert (ROOT / "Main.py").read_bytes() == main_py
     code = tmp_path / "code"
     code.mkdir()
     (code / "removed_module.py").write_text("x = 1\n")

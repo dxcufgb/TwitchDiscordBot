@@ -274,8 +274,14 @@ def main() -> int:
 
     if args.code_dir:
         code_dir = args.code_dir if args.code_dir.is_absolute() else ROOT / args.code_dir
-        if code_dir.resolve() == (ROOT / "twitchbot").resolve():
-            sys.exit("--code-dir must not be the repository's twitchbot folder (the version is stamped in the copy)")
+        # The folder's stale *.py files are deleted below, so it must be a staging folder: inside the repository only
+        # under build/ (git-ignored), and never the repository itself or a folder that contains it.
+        resolved, root = code_dir.resolve(), ROOT.resolve()
+        build_dir = root / "build"
+        if resolved == root or root.is_relative_to(resolved):
+            sys.exit("--code-dir must be a staging folder, not the repository or a folder containing it")
+        if resolved.is_relative_to(root) and not (resolved != build_dir and resolved.is_relative_to(build_dir)):
+            sys.exit("--code-dir inside the repository must be a folder under build/ (e.g. build/twitchbot)")
         code_dir.mkdir(parents=True, exist_ok=True)
         staged = {Path(arc).name: src for src, arc, _ in common if arc.startswith("twitchbot/")}
         for old in code_dir.glob("*.py"):  # Inno Setup takes every *.py: drop modules left by an earlier build
