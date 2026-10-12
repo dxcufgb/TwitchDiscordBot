@@ -98,6 +98,8 @@ jobs:
     uses: ./.github/workflows/ci.yml
     with:
       version: ${{ needs.prepare.outputs.version }}
+      # Exactly the event's commit, not the (movable) tag ref.
+      ref: ${{ github.sha }}
 
   build:
     needs: [prepare, ci]
@@ -109,6 +111,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # Exactly the event's commit, not the (movable) tag ref.
+          ref: ${{ github.sha }}
           # Full history and tags: build_release.py lists the commits since the previous release in CHANGES.md.
           fetch-depth: 0
       - name: Get the setup wizard built and tested by CI
@@ -155,6 +159,15 @@ jobs:
           while read -r _ name; do files+=("dist/$name"); done < dist/SHA256SUMS.txt
           files+=(dist/SHA256SUMS.txt)
 
+          # The commit the tag points to (annotated tags are followed); empty if the tag does not exist.
+          tag_commit() {
+            local ref type sha
+            ref="$(gh api "repos/$GH_REPO/git/ref/tags/$TAG" --jq '.object.type + " " + .object.sha' 2>/dev/null)" || return 0
+            read -r type sha <<<"$ref"
+            if [[ "$type" == "tag" ]]; then sha="$(gh api "repos/$GH_REPO/git/tags/$sha" --jq .object.sha)"; fi
+            echo "$sha"
+          }
+
           if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
             # Checked again here: only a token that can write sees draft releases.
             releases="$(gh api --paginate "repos/$GH_REPO/releases" --jq '.[] | .tag_name, .name')"
@@ -166,18 +179,33 @@ jobs:
               --jq .body > generated.md
             { cat dist/RELEASE_NOTES.md; echo; cat generated.md; } > notes.md
             # A draft first: the tag is created on the tested commit only when the release is published.
+            # If anything fails while it is still a draft, delete that draft so the next run is not blocked by it.
+            remove_leftover_draft() {
+              if [[ "$(gh release view "$TAG" --json isDraft --jq .isDraft 2>/dev/null)" == "true" ]]; then
+                echo "::warning::Publishing failed; deleting the leftover draft release $TAG."
+                gh release delete "$TAG" --yes || echo "::error::Could not delete the draft release $TAG; delete it by hand."
+              fi
+            }
+            trap remove_leftover_draft EXIT
             gh release create "$TAG" --draft --target "$GITHUB_SHA" --title "$TAG" --notes-file notes.md "${files[@]}"
             if [[ "$PRERELEASE" == "true" ]]; then
               gh release edit "$TAG" --draft=false --prerelease
             else
               gh release edit "$TAG" --draft=false --latest
             fi
-            tag_sha="$(gh api "repos/$GH_REPO/git/ref/tags/$TAG" --jq .object.sha)"
+            trap - EXIT
+            tag_sha="$(tag_commit)"
             if [[ "$tag_sha" != "$GITHUB_SHA" ]]; then
               echo "::error::Tag $TAG points to $tag_sha, not the tested commit $GITHUB_SHA."
               exit 1
             fi
           else
+            # The files were built from $GITHUB_SHA: refuse if the tag was moved (or deleted) since the event.
+            tag_sha="$(tag_commit)"
+            if [[ "$tag_sha" != "$GITHUB_SHA" ]]; then
+              echo "::error::Tag $TAG now points to '${tag_sha:-nothing}', not $GITHUB_SHA that was tested and built. Not uploading."
+              exit 1
+            fi
             gh release upload "$TAG" --clobber "${files[@]}"
             # Put the install notes on top of the notes written by hand (once, also when this job is re-run).
             gh release view "$TAG" --json body --jq .body > body.md

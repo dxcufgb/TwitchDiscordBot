@@ -80,6 +80,8 @@ warn() { printf '\033[1;33mWarning:\033[0m %s\n' "$*" >&2; }
 die() { printf '\033[1;31mError:\033[0m %s\n' "$*" >&2; exit 1; }
 
 confirm() {  # confirm "question" -> 0 for yes
+    # Default yes means a real Enter on the terminal only: no terminal, end of input (Ctrl-D, a closed /dev/tty)
+    # or a read error make read fail, which is "no". The INSTALL_GITHUB_TOKEN reuse question relies on this.
     [[ $ASSUME_YES -eq 1 ]] && return 0
     local reply
     read -r -p "$1 [Y/n] " reply </dev/tty || return 1
