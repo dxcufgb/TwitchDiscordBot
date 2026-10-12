@@ -18,9 +18,29 @@ The installer asks for these values and checks them with Discord and Twitch befo
 
 ## Linux (systemd)
 
+### Install on Linux
+
 ```bash
-sudo ./install.sh
+curl -fsSL https://raw.githubusercontent.com/dxcufgb/install/main/install.sh | sudo bash -s twitchdiscordbot
 ```
+
+The repository is private, so it asks for a fine-grained GitHub token with read-only *Contents* access to this
+repository. Or download `twitchdiscordbot-linux.tar.gz`, `tar xzf twitchdiscordbot-linux.tar.gz`,
+`cd twitchdiscordbot-X.Y.Z`, `sudo ./install.sh` (from this folder: just `sudo ./install.sh`).
+
+| Option | Meaning |
+|---|---|
+| (none) | install or upgrade in place, interactive (asks for what it needs) |
+| `--yes`, `-y` | non-interactive: no questions; missing required settings → clear error |
+| `--auto-update` / `--no-auto-update` | turn automatic updates on / off as part of this install |
+| `--enable-auto-update` / `--disable-auto-update` | turn them on / off on an existing install, nothing else |
+| `--check-update` | only check: exit 0 = up to date, 10 = newer release available, other = error |
+| `--update-now` | install the latest release now (same path as the daily updater) |
+| `--uninstall` [`--purge`] | remove (keep / also delete settings and data) |
+| `--help` | usage: these options first, then the ones specific to this repository |
+
+Options for this bot: `--reconfigure` (enter new credentials and restart), `--prefix DIR`, `--user NAME`,
+`--no-service`, `--skip-check`. See `./install.sh --help`.
 
 The installer:
 
@@ -34,16 +54,15 @@ The installer:
 | Status / logs | `systemctl status twitchdiscordbot` · `journalctl -u twitchdiscordbot -f` |
 | Restart | `sudo systemctl restart twitchdiscordbot` |
 | Change credentials | `sudo /opt/twitchdiscordbot/install.sh --reconfigure` |
-| Upgrade | run `sudo ./install.sh` from the newer release folder |
+| Upgrade | run the one-liner again, `sudo /opt/twitchdiscordbot/install.sh --update-now`, or `sudo ./install.sh` from the newer release folder |
 | Uninstall | `sudo /opt/twitchdiscordbot/install.sh --uninstall` (add `--purge` to delete settings and data) |
 
-Unattended install: `sudo DISCORD_TOKEN=… TWITCH_APP_ID=… TWITCH_APP_SECRET=… ./install.sh --yes`.
-Other options: `--prefix DIR`, `--user NAME`, `--no-service`, `--skip-check`, `--auto-update` (see
-`./install.sh --help` and [Automatic updates](#automatic-updates)).
+Unattended install: `sudo DISCORD_TOKEN=… TWITCH_APP_ID=… TWITCH_APP_SECRET=… ./install.sh --yes`. See also
+[Automatic updates](#automatic-updates).
 
 ## Windows 10/11 or Windows Server
 
-**Setup wizard (recommended):** run `twitchdiscordbot-<version>-windows-setup.exe` from the release page. It
+**Setup wizard (recommended):** run `twitchdiscordbot-<version>-setup.exe` from the release page. It
 asks for the credentials, checks them, and installs everything listed below. Uninstall it from
 *Settings -> Apps -> Installed apps*; you can choose there whether to keep your settings. The setup isn't
 code-signed yet, so Windows SmartScreen may warn about it: click *More info* -> *Run anyway*. For a silent
@@ -107,12 +126,15 @@ root (Linux, `/opt/twitchdiscordbot/updater/github-token`, mode 600) or by Admin
 | Turn on while installing | `sudo ./install.sh --auto-update` (a fresh interactive install also asks) |
 | Turn on later / replace the token | `sudo /opt/twitchdiscordbot/install.sh --enable-auto-update` |
 | Turn off (deletes the token) | `sudo /opt/twitchdiscordbot/install.sh --disable-auto-update` |
-| Check without installing | `sudo /opt/twitchdiscordbot/auto-update.sh --check` |
-| Update now | `sudo /opt/twitchdiscordbot/auto-update.sh` (or `sudo systemctl start twitchdiscordbot-update`) |
+| Check without installing | `sudo /opt/twitchdiscordbot/install.sh --check-update` (exit 0 = up to date, 10 = newer release available, other = error), or `sudo /opt/twitchdiscordbot/auto-update.sh --check` |
+| Update now | `sudo /opt/twitchdiscordbot/install.sh --update-now` (or `sudo /opt/twitchdiscordbot/auto-update.sh`, or `sudo systemctl start twitchdiscordbot-update`) |
 | Log | `journalctl -u twitchdiscordbot-update` |
 
-The token is asked for with hidden input. For `--yes`, pass it in the environment instead:
-`sudo UPDATE_GITHUB_TOKEN=… ./install.sh --yes --auto-update`.
+The token is asked for with hidden input. When you install with the one-liner, the installer offers to reuse the
+token you gave it (`INSTALL_GITHUB_TOKEN`). For `--yes`, pass it in the environment instead:
+`sudo UPDATE_GITHUB_TOKEN=… ./install.sh --yes --auto-update` (`INSTALL_GITHUB_TOKEN` works too). A token is never
+taken as an argument. `--check-update` and `--update-now` use the stored token; with automatic updates off they
+use one from `UPDATE_GITHUB_TOKEN` or `INSTALL_GITHUB_TOKEN` for that run only, without storing it.
 
 **Windows** (scheduled task *TwitchDiscordBot Update*, daily around 04:00 with a random delay of up to 4 hours,
 runs as SYSTEM):

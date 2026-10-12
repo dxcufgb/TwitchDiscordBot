@@ -4,7 +4,18 @@ on:
   push:
     branches: [main, master]
   pull_request:
+  # The Release workflow runs this whole CI first, with the version it releases: the installers are then tested
+  # with exactly that version stamped in, and the setup wizard it attaches is the one built and installed here.
   workflow_call:
+    inputs:
+      version:
+        description: "Release version to stamp into the built files (default: twitchbot.__version__)"
+        required: false
+        type: string
+      ref:
+        description: "Commit to check out (the Release workflow passes github.sha; default: the event's ref)"
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -20,10 +31,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # The Release workflow passes the exact commit (a tag ref could be moved meanwhile); empty = default.
+          ref: ${{ inputs.ref }}
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ matrix.python-version }}
-          cache: pip
+          # No cache when the Release workflow calls this.
+          cache: ${{ !inputs.version && 'pip' || '' }}
           cache-dependency-path: requirements*.txt
       - run: pip install -r requirements-dev.txt
       - run: ruff check .
@@ -36,14 +50,18 @@ jobs:
     # A hung installer (e.g. waiting on a dialog) must fail fast instead of running for hours.
     timeout-minutes: 20
     runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ inputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # The Release workflow passes the exact commit (a tag ref could be moved meanwhile); empty = default.
+          ref: ${{ inputs.ref }}
       - name: Shellcheck
         run: shellcheck packaging/linux/install.sh packaging/linux/auto-update.sh start-bot.sh scripts/install-service.sh
       - name: Build release archives
-        run: python3 scripts/build_release.py --out dist
+        run: python3 scripts/build_release.py --out dist ${VERSION:+--version "$VERSION"}
       - name: Install (systemd service)
         run: |
           tar xzf dist/twitchdiscordbot-*-linux.tar.gz -C "$RUNNER_TEMP"
@@ -70,6 +88,11 @@ jobs:
           sudo cat /opt/twitchdiscordbot/logs/bot.log
           sudo grep -q "Discord rejected the bot token" /opt/twitchdiscordbot/logs/bot.log
           systemctl show twitchdiscordbot -p User -p UnitFileState | tee /dev/stderr | grep -q "User=twitchbot"
+          # The installed copy carries the version it was built with (from the tag in a release).
+          expected="${VERSION:-$(python3 -c 'import twitchbot; print(twitchbot.__version__)')}"
+          test "$(cat /opt/twitchdiscordbot/VERSION)" = "$expected"
+          sudo /opt/twitchdiscordbot/.venv/bin/python -B /opt/twitchdiscordbot/Main.py --version | tee /dev/stderr |
+            grep -qx "TwitchDiscordBot $expected"
       - name: Upgrade in place, then uninstall
         run: |
           cd "$RUNNER_TEMP"/twitchdiscordbot-*/
@@ -87,6 +110,27 @@ jobs:
           out="$(sudo /opt/twitchdiscordbot/auto-update.sh --check 2>&1)" && code=0 || code=$?
           echo "$out (exit code $code)"
           if grep -q "ci_fake_update_token" <<<"$out"; then echo "token leaked into the output"; exit 1; fi
+          # The common installer options: --check-update exits 0 / 10 / other (a fake token is an error).
+          ./install.sh --help | grep -q -- "--check-update"
+          out="$(sudo /opt/twitchdiscordbot/install.sh --check-update 2>&1)" && code=0 || code=$?
+          echo "$out (exit code $code)"
+          test "$code" = 1
+          if grep -q "ci_fake_update_token" <<<"$out"; then echo "token leaked into the output"; exit 1; fi
+          sudo /opt/twitchdiscordbot/install.sh --disable-auto-update
+          test ! -e /opt/twitchdiscordbot/updater
+          if systemctl is-enabled twitchdiscordbot-update.timer 2>/dev/null; then echo "timer still enabled"; exit 1; fi
+          # Without a stored token, the one-liner's INSTALL_GITHUB_TOKEN is used for the check only, never stored.
+          out="$(sudo INSTALL_GITHUB_TOKEN=ci_fake_install_token ./install.sh --check-update 2>&1)" && code=0 || code=$?
+          echo "$out (exit code $code)"
+          test "$code" = 1
+          if grep -q "No GitHub token" <<<"$out"; then echo "the token from the environment was not used"; exit 1; fi
+          if grep -q "ci_fake_install_token" <<<"$out"; then echo "token leaked into the output"; exit 1; fi
+          test ! -e /opt/twitchdiscordbot/updater
+          # --yes --enable-auto-update stores INSTALL_GITHUB_TOKEN as the updater token (root 600).
+          sudo INSTALL_GITHUB_TOKEN=ci_fake_install_token ./install.sh --yes --enable-auto-update
+          systemctl is-enabled twitchdiscordbot-update.timer
+          test "$(sudo stat -c '%U:%G %a' /opt/twitchdiscordbot/updater/github-token)" = "root:root 600"
+          sudo grep -qx "ci_fake_install_token" /opt/twitchdiscordbot/updater/github-token
           sudo /opt/twitchdiscordbot/install.sh --uninstall --purge
           test ! -e /opt/twitchdiscordbot
           test ! -e /etc/systemd/system/twitchdiscordbot.service
@@ -103,6 +147,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # The Release workflow passes the exact commit (a tag ref could be moved meanwhile); empty = default.
+          ref: ${{ inputs.ref }}
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.15"
@@ -118,7 +164,13 @@ jobs:
           $issues | Format-Table -AutoSize -Wrap RuleName, ScriptName, Line, Message
           if ($issues) { exit 1 }
       - name: Build release archives
-        run: python scripts/build_release.py --out dist
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          $buildArgs = @('--out', 'dist')
+          if ($env:VERSION) { $buildArgs += @('--version', $env:VERSION) }
+          python scripts/build_release.py @buildArgs
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
       - name: Install (scheduled task)
         shell: pwsh
         run: |
@@ -171,31 +223,38 @@ jobs:
     # A hung installer (e.g. waiting on a dialog) must fail fast instead of running for hours.
     timeout-minutes: 20
     runs-on: windows-latest
+    env:
+      VERSION: ${{ inputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # The Release workflow passes the exact commit (a tag ref could be moved meanwhile); empty = default.
+          ref: ${{ inputs.ref }}
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.15"
       - name: Build setup.exe
         shell: pwsh
         run: |
-          $version = python -c "import twitchbot; print(twitchbot.__version__)"
+          $version = if ($env:VERSION) { $env:VERSION } else { python -c "import twitchbot; print(twitchbot.__version__)" }
+          # The twitchbot package with the version stamped in (the repository itself keeps its version).
+          python scripts/build_release.py --out build/release --version $version --code-dir build/twitchbot
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
           $iscc = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'
           if (-not (Test-Path $iscc)) { throw "Inno Setup not found at $iscc" }
-          & $iscc /Qp "/DAppVersion=$version" packaging/windows/TwitchDiscordBot.iss
+          & $iscc /Qp "/DAppVersion=$version" "/DCodeDir=$((Resolve-Path build/twitchbot).Path)" packaging/windows/TwitchDiscordBot.iss
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           Get-ChildItem dist | Format-Table Name, Length
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: windows-setup
-          path: dist/*-windows-setup.exe
+          path: dist/*-setup.exe
           if-no-files-found: error
       - name: Silent install
         shell: pwsh
         run: |
-          $exe = (Get-Item dist/*-windows-setup.exe).FullName
+          $exe = (Get-Item dist/*-setup.exe).FullName
           $env:DISCORD_TOKEN = 'ci-fake-token'; $env:TWITCH_APP_ID = 'ci'; $env:TWITCH_APP_SECRET = 'ci'
           $env:UPDATE_GITHUB_TOKEN = 'ci_fake_update_token'
           $p = Start-Process $exe -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/MERGETASKS=autoupdate', "/LOG=$env:RUNNER_TEMP\setup-1.log" -Wait -PassThru
@@ -215,7 +274,9 @@ jobs:
           if (-not (Get-ScheduledTask -TaskName 'TwitchDiscordBot Update' -ErrorAction SilentlyContinue)) { throw 'autoupdate task not applied' }
           $tokenReaders = (Get-Acl "$dir\updater\github-token").Access.IdentityReference.Value
           if ($tokenReaders -match 'Users|Everyone|LOCAL SERVICE') { throw 'github-token must be Administrators/SYSTEM only' }
-          if ((Get-Content "$dir\VERSION").Trim() -ne (python -c "import twitchbot; print(twitchbot.__version__)")) { throw 'VERSION mismatch' }
+          $expected = if ($env:VERSION) { $env:VERSION } else { python -c "import twitchbot; print(twitchbot.__version__)" }
+          if ((Get-Content "$dir\VERSION").Trim() -ne $expected) { throw 'VERSION mismatch' }
+          if ((Get-Content -Raw "$dir\twitchbot\__init__.py") -notmatch [regex]::Escape("__version__ = `"$expected`"")) { throw '__version__ not stamped' }
           $log = "$dir\logs\bot.log"
           foreach ($i in 1..30) {
             if ((Test-Path $log) -and (Select-String -Quiet -Path $log -Pattern 'Discord rejected the bot token')) { break }
@@ -227,7 +288,7 @@ jobs:
       - name: Upgrade by running setup again, then uninstall with /PURGE
         shell: pwsh
         run: |
-          $exe = (Get-Item dist/*-windows-setup.exe).FullName
+          $exe = (Get-Item dist/*-setup.exe).FullName
           $dir = "$env:ProgramData\TwitchDiscordBot"
           Remove-Item Env:DISCORD_TOKEN, Env:TWITCH_APP_ID, Env:TWITCH_APP_SECRET, Env:UPDATE_GITHUB_TOKEN -ErrorAction SilentlyContinue
           $p = Start-Process $exe -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/LOG=$env:RUNNER_TEMP\setup-2.log" -Wait -PassThru

@@ -259,6 +259,13 @@ def latest_release(gh: GitHub) -> Release | None:
 
 
 def asset_name(version: str, platform: str) -> str:
+    """The release file to download: ``twitchdiscordbot-X.Y.Z-linux.tar.gz`` / ``-windows.zip``.
+
+    These are the unified release names (and also what releases up to 2.2.0 used), so every release this updater
+    can meet has them; there is no fallback to other names. The fixed-name copies (``twitchdiscordbot-linux.tar.gz``),
+    the setup wizard and legacy names on a release are ignored. A release without the file is reported as an error
+    and nothing is installed.
+    """
     if platform == "windows":
         return f"{NAME}-{version}-windows.zip"
     if platform == "linux":

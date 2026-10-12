@@ -1,30 +1,39 @@
 #!/usr/bin/env bash
 # TwitchDiscordBot installer for Linux (systemd).
 #
-# Run from the extracted release folder:
-#   sudo ./install.sh                 install or upgrade, ask for credentials, start the service
-#   sudo ./install.sh --reconfigure   enter new credentials and restart
-#   sudo ./install.sh --uninstall     remove the service and program files (keeps .env, data/, logs/)
-#   sudo ./install.sh --uninstall --purge   also delete settings, data, logs and the service user
-#   sudo ./install.sh --enable-auto-update    turn on daily automatic updates (asks for a GitHub token)
-#   sudo ./install.sh --disable-auto-update   turn them off and delete the stored token
+# Usage: sudo ./install.sh [options]   (from the extracted release folder; once installed also
+#                                       sudo /opt/twitchdiscordbot/install.sh [options])
 #
-# Options:
+#   (no option)              install or upgrade in place, interactive (asks for what it needs)
+#   --yes, -y                non-interactive: no questions; missing required settings -> clear error
+#                            (credentials from DISCORD_TOKEN, TWITCH_APP_ID, TWITCH_APP_SECRET, optional OWNER_ID)
+#   --auto-update            turn automatic updates on as part of this install
+#   --no-auto-update         turn them off as part of this install (without either, an upgrade keeps the choice)
+#   --enable-auto-update     turn automatic updates on for an existing install, nothing else
+#   --disable-auto-update    turn them off for an existing install (deletes the stored token), nothing else
+#   --check-update           only check: exit 0 = up to date, 10 = newer release available, other = error
+#   --update-now             install the latest release now (same path as the daily updater)
+#   --uninstall [--purge]    remove the service and program files, keeping .env, data/ and logs/
+#                            (--purge also deletes settings, data, logs and the service user)
+#   --help, -h               this help
+#
+# Options for TwitchDiscordBot:
+#   --reconfigure   enter new credentials and restart
 #   --prefix DIR    install location            (default /opt/twitchdiscordbot)
 #   --user NAME     system user running the bot (default twitchbot)
 #   --no-service    don't install the systemd service (run start-bot.sh yourself)
 #   --skip-check    don't verify the credentials against Discord/Twitch
-#   --yes           never prompt: install missing packages, take credentials from the environment
-#                   (DISCORD_TOKEN, TWITCH_APP_ID, TWITCH_APP_SECRET, optional OWNER_ID)
-#   --auto-update   also turn on automatic updates; the GitHub token comes from UPDATE_GITHUB_TOKEN or a prompt
-#   --no-auto-update  turn automatic updates off (by default an upgrade keeps the current choice)
 #
-# After installing, the installer is also available as $PREFIX/install.sh.
+# GitHub token (this repository is private; automatic updates need a fine-grained token with read-only Contents
+# access): taken from UPDATE_GITHUB_TOKEN, else INSTALL_GITHUB_TOKEN (exported by the dxcufgb/install one-liner;
+# asked before reusing it unless --yes), else asked for with hidden input. It is never taken as an argument
+# and never logged. --check-update and --update-now use the stored token, or one of these variables.
 set -euo pipefail
 
 SERVICE=twitchdiscordbot
 PREFIX=/opt/twitchdiscordbot
 BOT_USER=twitchbot
+USER_GIVEN=0
 ACTION=install
 PURGE=0
 SERVICE_ON=1
@@ -38,7 +47,7 @@ usage() { awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --prefix) PREFIX="${2:?--prefix needs a directory}"; shift ;;
-        --user) BOT_USER="${2:?--user needs a name}"; shift ;;
+        --user) BOT_USER="${2:?--user needs a name}"; USER_GIVEN=1; shift ;;
         --reconfigure) ACTION=reconfigure ;;
         --uninstall) ACTION=uninstall ;;
         --purge) PURGE=1 ;;
@@ -49,12 +58,16 @@ while [[ $# -gt 0 ]]; do
         --no-auto-update) AUTO_UPDATE=0 ;;
         --enable-auto-update) ACTION=enable-update ;;
         --disable-auto-update) ACTION=disable-update ;;
+        --check-update) ACTION=check-update ;;
+        --update-now) ACTION=update-now ;;
         -h|--help) usage; exit 0 ;;
         *) echo "Unknown option: $1 (see --help)" >&2; exit 2 ;;
     esac
     shift
 done
 PREFIX="${PREFIX%/}"
+# Tokens stay in this shell only: not exported to pip, the credential check or anything else this script runs.
+export -n UPDATE_GITHUB_TOKEN INSTALL_GITHUB_TOKEN
 UNIT_FILE="/etc/systemd/system/${SERVICE}.service"
 VENV_PY="$PREFIX/.venv/bin/python"
 UPDATE_UNIT="/etc/systemd/system/${SERVICE}-update.service"
@@ -67,6 +80,8 @@ warn() { printf '\033[1;33mWarning:\033[0m %s\n' "$*" >&2; }
 die() { printf '\033[1;31mError:\033[0m %s\n' "$*" >&2; exit 1; }
 
 confirm() {  # confirm "question" -> 0 for yes
+    # Default yes means a real Enter on the terminal only: no terminal, end of input (Ctrl-D, a closed /dev/tty)
+    # or a read error make read fail, which is "no". The INSTALL_GITHUB_TOKEN reuse question relies on this.
     [[ $ASSUME_YES -eq 1 ]] && return 0
     local reply
     read -r -p "$1 [Y/n] " reply </dev/tty || return 1
@@ -116,8 +131,13 @@ save_update_token() {
         info "Keeping the stored GitHub token"
         return 0
     fi
+    # The token the dxcufgb/install one-liner downloaded this release with (same kind: read-only Contents).
+    if [[ -z $token && -n ${INSTALL_GITHUB_TOKEN:-} ]] && { [[ $ASSUME_YES -eq 1 ]] ||
+        confirm "Use the GitHub token you gave the installer for automatic updates too?"; }; then
+        token=$INSTALL_GITHUB_TOKEN
+    fi
     if [[ -z $token ]]; then
-        [[ $ASSUME_YES -eq 0 ]] || die "Set UPDATE_GITHUB_TOKEN in the environment to turn on automatic updates with --yes."
+        [[ $ASSUME_YES -eq 0 ]] || die "Set UPDATE_GITHUB_TOKEN (or INSTALL_GITHUB_TOKEN) in the environment to turn on automatic updates with --yes."
         cat <<'TXT'
 
 Automatic updates download new releases from the private GitHub repository dxcufgb/TwitchDiscordBot,
@@ -217,8 +237,8 @@ disable_auto_update() {
 
 if [[ $ACTION == enable-update || $AUTO_UPDATE == 1 ]]; then
     has_systemd || die "Automatic updates need systemd."
-    if [[ $ASSUME_YES -eq 1 && -z ${UPDATE_GITHUB_TOKEN:-} && ! -s $TOKEN_FILE ]]; then
-        die "Set UPDATE_GITHUB_TOKEN in the environment to turn on automatic updates with --yes."
+    if [[ $ASSUME_YES -eq 1 && -z ${UPDATE_GITHUB_TOKEN:-} && -z ${INSTALL_GITHUB_TOKEN:-} && ! -s $TOKEN_FILE ]]; then
+        die "Set UPDATE_GITHUB_TOKEN (or INSTALL_GITHUB_TOKEN) in the environment to turn on automatic updates with --yes."
     fi
 fi
 if [[ $ACTION == enable-update ]]; then
@@ -230,6 +250,22 @@ if [[ $ACTION == disable-update ]]; then
     disable_auto_update
     info "Automatic updates are off and the GitHub token was deleted."
     exit 0
+fi
+
+# ---------------------------------------------------------------- check for / install the latest release
+# Both go through auto-update.sh, the daily updater (download, SHA256SUMS.txt check, upgrade, rollback), run from
+# this folder against the installation in $PREFIX, so they also work on an installation of an older version.
+if [[ $ACTION == check-update || $ACTION == update-now ]]; then
+    [[ -x $VENV_PY && -f $PREFIX/Main.py && -f $PREFIX/twitchbot/updater.py ]] ||
+        die "TwitchDiscordBot is not installed in $PREFIX."
+    [[ -f $SRC_DIR/auto-update.sh ]] || die "$SRC_DIR has no auto-update.sh."
+    update_args=(--prefix "$PREFIX")
+    # Without --user, auto-update.sh takes the user from the systemd unit (default twitchbot).
+    [[ $USER_GIVEN -eq 1 ]] && update_args+=(--user "$BOT_USER")
+    [[ $ACTION == check-update ]] && update_args+=(--check-update)
+    # A token from the environment reaches only the updater, and is only used when none is stored.
+    UPDATE_GITHUB_TOKEN="${UPDATE_GITHUB_TOKEN:-}" INSTALL_GITHUB_TOKEN="${INSTALL_GITHUB_TOKEN:-}" \
+        exec bash "$SRC_DIR/auto-update.sh" "${update_args[@]}"
 fi
 
 # ---------------------------------------------------------------- uninstall
@@ -589,6 +625,7 @@ cat <<TXT
   Upgrade:       run install.sh from a newer release folder
   Uninstall:     sudo $PREFIX/install.sh --uninstall [--purge]
   Auto-update:   sudo $PREFIX/install.sh --enable-auto-update | --disable-auto-update
+  Updates:       sudo $PREFIX/install.sh --check-update | --update-now
 
 Next, in Discord: /setup channel, then /stream add <twitch name>.
 TXT

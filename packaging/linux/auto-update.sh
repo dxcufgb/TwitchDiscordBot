@@ -2,13 +2,18 @@
 # TwitchDiscordBot automatic updater for Linux (opt-in, see README.md "Automatic updates").
 #
 # Installed as $PREFIX/auto-update.sh and run as root by twitchdiscordbot-update.timer (daily).
-# Run it by hand to check or update right away:
-#   sudo /opt/twitchdiscordbot/auto-update.sh           install a newer release now, if there is one
-#   sudo /opt/twitchdiscordbot/auto-update.sh --check   only report whether a newer release exists
+# Run it by hand to check or update right away (or use install.sh --check-update / --update-now):
+#   sudo /opt/twitchdiscordbot/auto-update.sh                  install a newer release now, if there is one
+#   sudo /opt/twitchdiscordbot/auto-update.sh --check          only report whether a newer release exists
+#   sudo /opt/twitchdiscordbot/auto-update.sh --check-update   the same; exit 0 = up to date, 10 = newer release
+#                                                              available, anything else = error
+#   --prefix DIR   the installation to update (default: the folder this script is in)
+# The GitHub token comes from $PREFIX/updater/github-token; without one, a token in INSTALL_GITHUB_TOKEN or
+# UPDATE_GITHUB_TOKEN is used for this run only (never stored, never on a command line).
 #
-# It downloads the newest release's -linux.tar.gz, verifies it against SHA256SUMS.txt, and runs that
-# release's install.sh (the normal upgrade path, keeping .env and data/). If the upgrade fails, the
-# previous program files are restored and the bot is started again; if that rollback fails too, it logs
+# It downloads the newest release's twitchdiscordbot-X.Y.Z-linux.tar.gz, verifies it against SHA256SUMS.txt,
+# and runs that release's install.sh (the normal upgrade path, keeping .env and data/). If the upgrade fails,
+# the previous program files are restored and the bot is started again; if that rollback fails too, it logs
 # "ROLLBACK FAILED", keeps the backup under /var/lib/twitchdiscordbot-update/ and exits non-zero.
 # Logs go to the journal:
 #   journalctl -u twitchdiscordbot-update
@@ -19,13 +24,12 @@ umask 022
 SERVICE=twitchdiscordbot
 UNIT_FILE="/etc/systemd/system/${SERVICE}.service"
 PREFIX="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-TOKEN_FILE="$PREFIX/updater/github-token"
 LOCK_FILE="/run/${SERVICE}-update.lock"
-VENV_PY="$PREFIX/.venv/bin/python"
 BACKUP_KEEP_DIR="/var/lib/${SERVICE}-update"
 MODE=update
 BOT_USER=""
 ROLLBACK_ERRORS=()
+TOKEN_TMP_DIR=""
 
 log() { printf '%s\n' "$*"; }
 die() { printf 'Error: %s\n' "$*" >&2; exit 1; }
@@ -35,15 +39,18 @@ main() {
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --check) MODE=check ;;
+            --check-update) MODE=check-update ;;
             --user) BOT_USER="${2:?--user needs a name}"; shift ;;
-            -h|--help) sed -n '2,12p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; return 0 ;;
+            --prefix) PREFIX="${2:?--prefix needs a directory}"; PREFIX="${PREFIX%/}"; shift ;;
+            -h|--help) sed -n '2,19p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; return 0 ;;
             *) die "Unknown option: $1 (see --help)" ;;
         esac
         shift
     done
+    TOKEN_FILE="$PREFIX/updater/github-token"
+    VENV_PY="$PREFIX/.venv/bin/python"
     [[ $EUID -eq 0 ]] || die "Please run as root: sudo $0"
     [[ -x $VENV_PY && -f $PREFIX/twitchbot/updater.py ]] || die "TwitchDiscordBot is not installed in $PREFIX."
-    [[ -f $TOKEN_FILE ]] || die "No GitHub token in $TOKEN_FILE. Enable auto-update with: sudo $PREFIX/install.sh --enable-auto-update"
     # Root runs this Python and updater.py: refuse if anyone but root could have changed them.
     if [[ -n "$(find "$PREFIX/.venv" "$PREFIX/twitchbot" ! -type l \( ! -user root -o -perm /002 -o \( -perm /020 ! -group root \) \) -print -quit)" ]]; then
         die "Program files in $PREFIX are writable by other users; run install.sh from a release folder to repair them."
@@ -52,6 +59,21 @@ main() {
         BOT_USER="$(sed -n 's/^User=//p' "$UNIT_FILE" | head -n1)"
     fi
     BOT_USER="${BOT_USER:-twitchbot}"
+    if [[ ! -f $TOKEN_FILE ]]; then
+        token_from_environment ||
+            die "No GitHub token in $TOKEN_FILE. Enable auto-update with: sudo $PREFIX/install.sh --enable-auto-update (or set UPDATE_GITHUB_TOKEN for this run only)"
+    fi
+
+    local code=0 work new_dir
+    if [[ $MODE == check-update ]]; then
+        # Read-only, so no lock: a running update must not turn this into "up to date".
+        updater check || code=$?
+        case $code in
+            0) return 10 ;;  # a newer release is available
+            3) return 0 ;;   # up to date
+            *) return 1 ;;
+        esac
+    fi
 
     exec 9>"$LOCK_FILE"
     if ! flock -n 9; then
@@ -59,7 +81,6 @@ main() {
         return 0
     fi
 
-    local code=0 work new_dir
     if [[ $MODE == check ]]; then
         updater check || code=$?
         [[ $code -eq 0 || $code -eq 3 ]] || return 1
@@ -69,7 +90,7 @@ main() {
     # On disk (not a RAM-backed /tmp): the backup includes the virtual environment.
     work="$(mktemp -d "/var/tmp/${SERVICE}-update.XXXXXXXX")"
     # shellcheck disable=SC2064  # expand $work now
-    trap "rm -rf '$work'" EXIT
+    trap "rm -rf '$work'; remove_token_copy" EXIT
 
     new_dir="$(updater download --dest "$work/new")" || code=$?
     if [[ $code -eq 3 ]]; then
@@ -105,7 +126,7 @@ main() {
     # The release's installer upgrades in place: it keeps .env, data/, logs/, this auto-update setting and the
     # token, and exits non-zero if the bot does not stay up.
     if (cd / && env -u DISCORD_TOKEN -u TWITCH_APP_ID -u TWITCH_APP_SECRET -u OWNER_ID -u UPDATE_GITHUB_TOKEN \
-        "$new_dir/install.sh" "${args[@]}" </dev/null); then
+        -u INSTALL_GITHUB_TOKEN "$new_dir/install.sh" "${args[@]}" </dev/null); then
         log "Updated to $(cat "$PREFIX/VERSION" 2>/dev/null)."
         return 0
     fi
@@ -123,6 +144,23 @@ main() {
 }
 
 rollback_error() { ROLLBACK_ERRORS+=("$*"); }
+
+# No stored token (automatic updates are off): use one from the environment for this run only. It is written to a
+# root-only temporary file because updater.py reads the token from a file, never from its command line.
+token_from_environment() {
+    local token="${UPDATE_GITHUB_TOKEN:-${INSTALL_GITHUB_TOKEN:-}}"
+    [[ -n $token ]] || return 1
+    [[ $token =~ ^[A-Za-z0-9_]+$ ]] || die "The GitHub token in the environment does not look like one (letters, digits and _ only)."
+    TOKEN_TMP_DIR="$(mktemp -d)"  # mode 700, owned by root
+    trap remove_token_copy EXIT  # before writing: a failed write must not leave the folder behind
+    TOKEN_FILE="$TOKEN_TMP_DIR/github-token"
+    (umask 077 && printf '%s\n' "$token" >"$TOKEN_FILE")  # printf is a builtin: not in any process list
+}
+
+# shellcheck disable=SC2317,SC2329  # called from the EXIT traps (SC2317 on older shellcheck)
+remove_token_copy() {
+    if [[ -n $TOKEN_TMP_DIR ]]; then rm -rf "$TOKEN_TMP_DIR"; fi
+}
 
 as_bot() {
     if command -v runuser >/dev/null 2>&1; then runuser -u "$BOT_USER" -- "$@"; else sudo -u "$BOT_USER" -- "$@"; fi
@@ -192,6 +230,7 @@ rollback_failed() {  # rollback_failed WORKDIR: report, keep the backup, print m
     fi
     if [[ -z $keep ]]; then
         trap - EXIT  # could not move it: keep the whole work folder instead of deleting it
+        trap remove_token_copy EXIT  # (but never a temporary copy of the token)
         keep="$work/backup"
     fi
     for error in "${ROLLBACK_ERRORS[@]}"; do

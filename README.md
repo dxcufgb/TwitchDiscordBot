@@ -21,12 +21,37 @@ command under *Server Settings → Integrations → TwitchBot*.
 
 ## Install from a release (recommended)
 
-Download the archive for your OS from the [Releases page](../../releases). Each archive holds only the bot and
-an installer:
+### Install on Linux
 
-- **Linux:** `tar xzf twitchdiscordbot-<version>-linux.tar.gz && cd twitchdiscordbot-<version> && sudo ./install.sh`
-- **Windows:** run `twitchdiscordbot-<version>-windows-setup.exe`, a setup wizard that also adds an entry
-  to *Apps & features* for uninstalling. For scripted installs, use the `-windows.zip` and run `install.cmd`.
+```bash
+curl -fsSL https://raw.githubusercontent.com/dxcufgb/install/main/install.sh | sudo bash -s twitchdiscordbot
+```
+
+This repository is private, so it asks for a fine-grained GitHub token with read-only *Contents* access to this
+repository. Or download `twitchdiscordbot-linux.tar.gz` from the [latest release](../../releases/latest), then
+`tar xzf twitchdiscordbot-linux.tar.gz`, `cd twitchdiscordbot-X.Y.Z`, `sudo ./install.sh`.
+
+| Option | Meaning |
+|---|---|
+| (none) | install or upgrade in place, interactive (asks for what it needs) |
+| `--yes`, `-y` | non-interactive: no questions; missing required settings → clear error |
+| `--auto-update` / `--no-auto-update` | turn automatic updates on / off as part of this install |
+| `--enable-auto-update` / `--disable-auto-update` | turn them on / off on an existing install, nothing else |
+| `--check-update` | only check: exit 0 = up to date, 10 = newer release available, other = error |
+| `--update-now` | install the latest release now (same path as the daily updater) |
+| `--uninstall` [`--purge`] | remove (keep / also delete settings and data) |
+| `--help` | usage: these options first, then the ones specific to this repository |
+
+Options for this bot: `--reconfigure` (enter new credentials), `--prefix DIR`, `--user NAME`, `--no-service`,
+`--skip-check`. Unattended: `sudo DISCORD_TOKEN=… TWITCH_APP_ID=… TWITCH_APP_SECRET=… ./install.sh --yes`.
+
+### Install on Windows
+
+Run `twitchdiscordbot-X.Y.Z-setup.exe` (or `twitchdiscordbot-setup.exe`, the same file) from the
+[Releases page](../../releases), a setup wizard that also adds an entry to *Apps & features* for uninstalling.
+For scripted installs, use `twitchdiscordbot-X.Y.Z-windows.zip` and run `install.cmd`.
+
+### What the installers do
 
 The installer:
 
@@ -44,9 +69,9 @@ task as SYSTEM on Windows) that installs newer releases through the same upgrade
 `SHA256SUMS.txt`, and rolls back if the new version doesn't start. Because this repository is private, it needs
 a fine-grained GitHub token with read-only *Contents* access, stored separately from `.env`. Turn it on with
 `install.sh --auto-update` / `--enable-auto-update`, `install.cmd -AutoUpdate` / `-EnableAutoUpdate`, or the setup
-wizard's checkbox; see [packaging/README.md](packaging/README.md#automatic-updates). The logic lives in
-`twitchbot/updater.py` (standard library only) with thin wrappers in `packaging/linux/auto-update.sh` and
-`packaging/windows/auto-update.ps1`. You still need a Discord application and a Twitch
+wizard's checkbox (on Linux the one-liner's token can be reused for it); see
+[packaging/README.md](packaging/README.md#automatic-updates). The logic lives in `twitchbot/updater.py` (standard
+library only) with thin wrappers in `packaging/linux/auto-update.sh` and `packaging/windows/auto-update.ps1`. You still need a Discord application and a Twitch
 application first (steps 1–2 below).
 
 ## Setup from source
@@ -154,13 +179,22 @@ See [AUDIT.md](AUDIT.md) for the audit that led to the 2.0 rewrite.
 
 ## Releasing
 
-1. Bump the version in `twitchbot/__init__.py` and `pyproject.toml` (they must match) and merge to `main`.
-2. Publish, either way:
-   - **Actions → Release → Run workflow** on `main`. This creates the tag `v<version>` and the release. It
-     refuses to run if that tag already exists.
-   - Or push a tag yourself: `git tag v2.0.0 && git push origin v2.0.0`.
+**Actions → Release → Run workflow → type the version** (`1.2.3`; a leading `v` is stripped, `1.2.3-rc.1` makes a
+pre-release). Fallback: publish a release `vX.Y.Z` on GitHub; the files are attached afterwards. No version bump
+in the code: the version comes from the tag, and the code's `__version__` simply stays at the last release's.
 
-The **Release** workflow runs the full CI first, including real installs on Linux (systemd) and Windows (Task
-Scheduler). It then builds the archives with `scripts/build_release.py` and publishes a GitHub release with the
-archives, `SHA256SUMS.txt` and generated notes. Versions with a hyphen (`2.1.0-rc1`) become pre-releases. To
-inspect the archives locally, run `python scripts/build_release.py`; they're written to `dist/`.
+The **Release** workflow runs the full CI first with that version stamped into the built files, including real
+installs on Linux (systemd) and Windows (Task Scheduler and the setup wizard). It then builds the files with
+`scripts/build_release.py` and publishes the release `vX.Y.Z` on the tested commit (it refuses a version whose tag
+or release already exists). Nothing is published if any job fails. Release files:
+
+| File | What |
+|---|---|
+| `twitchdiscordbot-X.Y.Z-linux.tar.gz` | Linux archive (top folder `twitchdiscordbot-X.Y.Z/` with `install.sh`) |
+| `twitchdiscordbot-X.Y.Z-windows.zip` | Windows archive (`install.cmd`) |
+| `twitchdiscordbot-X.Y.Z-setup.exe` | Windows setup wizard |
+| `twitchdiscordbot-linux.tar.gz`, `twitchdiscordbot-windows.zip`, `twitchdiscordbot-setup.exe` | the same files under names that never change (`releases/latest/download/<name>`) |
+| `twitchdiscordbot-X.Y.Z-windows-setup.exe` | legacy name of the setup wizard (releases up to 2.2.0) |
+| `SHA256SUMS.txt` | checksums of every other file (`sha256sum -c`) |
+
+To inspect them locally, run `python scripts/build_release.py --version 9.9.9`; they're written to `dist/`.
