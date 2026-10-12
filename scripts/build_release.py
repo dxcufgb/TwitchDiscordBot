@@ -225,7 +225,8 @@ def main() -> int:
     parser.add_argument("--code-dir", type=Path, help="also write the stamped twitchbot/*.py here (Inno Setup)")
     args = parser.parse_args()
 
-    version = (args.version or read_version()).strip().removeprefix("v")
+    repository_version = read_version()  # also checks that __init__.py and pyproject.toml agree
+    version = (args.version or repository_version).strip().removeprefix("v")
     if not VERSION_RE.match(version):
         sys.exit(f"Not a release version: {version!r} (expected e.g. 1.2.3 or 1.2.3-rc.1)")
 
@@ -273,10 +274,15 @@ def main() -> int:
 
     if args.code_dir:
         code_dir = args.code_dir if args.code_dir.is_absolute() else ROOT / args.code_dir
+        if code_dir.resolve() == (ROOT / "twitchbot").resolve():
+            sys.exit("--code-dir must not be the repository's twitchbot folder (the version is stamped in the copy)")
         code_dir.mkdir(parents=True, exist_ok=True)
-        for src, arc, _ in common:
-            if arc.startswith("twitchbot/"):
-                (code_dir / Path(arc).name).write_bytes(read_source(src, crlf=False))
+        staged = {Path(arc).name: src for src, arc, _ in common if arc.startswith("twitchbot/")}
+        for old in code_dir.glob("*.py"):  # Inno Setup takes every *.py: drop modules left by an earlier build
+            if old.name not in staged and old.name != "__init__.py":
+                old.unlink()
+        for name, src in staged.items():
+            (code_dir / name).write_bytes(read_source(src, crlf=False))
         (code_dir / "__init__.py").write_bytes(extra["twitchbot/__init__.py"])
 
     for p in [*files, out / CHECKSUMS]:

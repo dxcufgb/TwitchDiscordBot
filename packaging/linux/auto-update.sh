@@ -62,7 +62,6 @@ main() {
     if [[ ! -f $TOKEN_FILE ]]; then
         token_from_environment ||
             die "No GitHub token in $TOKEN_FILE. Enable auto-update with: sudo $PREFIX/install.sh --enable-auto-update (or set UPDATE_GITHUB_TOKEN for this run only)"
-        trap remove_token_copy EXIT
     fi
 
     local code=0 work new_dir
@@ -153,6 +152,7 @@ token_from_environment() {
     [[ -n $token ]] || return 1
     [[ $token =~ ^[A-Za-z0-9_]+$ ]] || die "The GitHub token in the environment does not look like one (letters, digits and _ only)."
     TOKEN_TMP_DIR="$(mktemp -d)"  # mode 700, owned by root
+    trap remove_token_copy EXIT  # before writing: a failed write must not leave the folder behind
     TOKEN_FILE="$TOKEN_TMP_DIR/github-token"
     (umask 077 && printf '%s\n' "$token" >"$TOKEN_FILE")  # printf is a builtin: not in any process list
 }

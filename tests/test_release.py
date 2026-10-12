@@ -123,6 +123,32 @@ def test_reproducible(tmp_path):
     assert windows_a.read_bytes() == windows_b.read_bytes()
 
 
+def test_code_dir_is_never_the_source_package_and_drops_stale_modules(tmp_path):
+    before = (ROOT / "twitchbot" / "__init__.py").read_bytes()
+    result = subprocess.run(
+        [sys.executable, "scripts/build_release.py", "--out", str(tmp_path / "d"), "--version", "9.9.9",
+         "--code-dir", "twitchbot"],
+        cwd=ROOT, capture_output=True, text=True,
+    )  # fmt: skip
+    assert result.returncode != 0 and "--code-dir" in result.stderr
+    assert (ROOT / "twitchbot" / "__init__.py").read_bytes() == before
+    code = tmp_path / "code"
+    code.mkdir()
+    (code / "removed_module.py").write_text("x = 1\n")
+    build(tmp_path / "d", "--code-dir", str(code), version="9.9.9")
+    assert {p.name for p in code.glob("*.py")} == {p.split("/")[1] for p in CODE}
+
+
+def test_repository_versions_must_agree_also_with_an_explicit_version(tmp_path, monkeypatch):
+    (tmp_path / "twitchbot").mkdir()
+    (tmp_path / "twitchbot" / "__init__.py").write_text('__version__ = "2.2.0"\n')
+    (tmp_path / "pyproject.toml").write_text('[project]\nversion = "2.1.0"\n')
+    build_release = load_build_release(monkeypatch, tmp_path)
+    monkeypatch.setattr(sys, "argv", ["build_release.py", "--version", "9.9.9", "--out", str(tmp_path / "dist")])
+    with pytest.raises(SystemExit, match="pyproject.toml version does not match"):
+        build_release.main()
+
+
 @pytest.mark.parametrize("bad", ["1.2", "01.2.3", "1.2.3+build", "1.2.3-", "latest", "v"])
 def test_invalid_version_is_rejected(tmp_path, bad):
     result = subprocess.run(
