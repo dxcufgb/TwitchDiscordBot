@@ -58,6 +58,8 @@ The installer:
 - installs Python 3.10+ if it's missing;
 - installs the bot with its own virtual environment, under `/opt/twitchdiscordbot` or `C:\ProgramData\TwitchDiscordBot`;
 - asks for the Discord and Twitch credentials and verifies them;
+- registers the slash commands with Discord (`Main.py --sync-commands`), so an upgrade's new or changed commands
+  show up right away, even with `--no-service` / `-NoService`;
 - starts the bot as a boot-time service: a hardened systemd unit running as a `twitchbot` user, or a scheduled
   task running as *LOCAL SERVICE*.
 
@@ -161,6 +163,18 @@ for example by an old invite link. Re-authorize it; the bot stays in the server 
 
 The bot checks this at startup. When a server is missing the permission, it posts the link in that server
 once and logs a warning.
+
+**After an update, Discord still shows the old commands.** The bot registers its commands at every start and
+retries after 10, 30 and 90 seconds when Discord can't be reached; the installers and the automatic updates also
+register them right after installing. Check `logs/bot.log` for "Registered N slash command(s)". Then:
+
+- Restart Discord, or press Ctrl+R: the client keeps its command list until it reloads.
+- Global commands can take up to an hour to reach every server. `DEV_GUILD_ID` registers them in one server
+  instantly.
+- When `DEV_GUILD_ID` is added, changed or removed, the bot empties the set it registered in the previous scope,
+  so old commands don't show up next to the new ones.
+- To register them by hand: `sudo -u twitchbot /opt/twitchdiscordbot/.venv/bin/python /opt/twitchdiscordbot/Main.py
+  --sync-commands`, or `.venv\Scripts\python.exe Main.py --sync-commands` on Windows.
 
 **Commands show up but say "This interaction failed".** The bot isn't running. Check the service and
 `logs/bot.log`.

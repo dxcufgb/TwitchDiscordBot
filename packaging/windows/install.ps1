@@ -399,6 +399,14 @@ if (-not $SkipCheck) {
     }
 }
 
+# A new version's slash commands only show up in Discord once they are registered; the bot also does this at
+# every start (with retries), so a failure here is not fatal.
+Info 'Registering the slash commands with Discord'
+$registered = $false
+Push-Location $InstallDir
+try { & $VenvPy Main.py --sync-commands; $registered = ($LASTEXITCODE -eq 0) } catch { $registered = $false } finally { Pop-Location }
+if (-not $registered) { Warn 'Could not register the slash commands now; the bot registers them again every time it starts.' }
+
 # ------------------------------------------------------------------ automatic updates
 if ($AutoUpdate) {
     Enable-AutoUpdate

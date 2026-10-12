@@ -7,11 +7,14 @@ and Inno Setup installers, an opt-in auto-updater, and a DM with the release not
 an update.
 
 ## Layout
-- `Main.py` – entry point (`twitchbot.bot.main()`); `--check` tests the credentials, `--version`.
+- `Main.py` – entry point (`twitchbot.bot.main()`); `--check` tests the credentials, `--sync-commands`, `--version`.
 - `twitchbot/bot.py` – `TwitchNotifierBot(discord.Client)`: one `Twitch` client created in
   `setup_hook` and closed in `close()`, the `poll_streams` task loop (never allowed to die),
   batching `get_users`/`get_streams` by 100 ids, embeds, logging setup. `run_bot` reconnects in
   `owner` mode (without the Server Members intent) when Discord refuses that intent.
+- `twitchbot/command_sync.py` – registers the slash commands at every start (background task, retries after
+  10/30/90 s), empties the previous scope when `DEV_GUILD_ID` changes, records it in `state.json` (`commands`).
+  `Main.py --sync-commands` does one attempt without writing `state.json`; both installers run it (non-fatal).
 - `twitchbot/commands.py` – slash commands (`/restart` is owner-only via `bot.is_owner`).
 - `twitchbot/notify.py` – pure, I/O-free announcement logic (filters, invite stripping, chunking).
 - `twitchbot/update_notify.py` – after an update, DMs the release notes once per person (owner, plus

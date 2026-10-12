@@ -5,6 +5,7 @@ Layout of ``state.json``::
     {
       "version": 3,
       "bot_version": "2.2.0" | null,   # bot version that last ran (update DMs); added in schema 3
+      "commands": {"guild_id": 123 | null, "hash": "sha256"},  # last slash command registration; optional
       "guilds": {
         "<guild id>": {
           "channel_id": 123 | null,
@@ -123,6 +124,8 @@ class StateStore:
         self.guilds: dict[int, GuildState] = {}
         # Version of the bot that last ran with this state; None until recorded (fresh or older state file).
         self.bot_version: str | None = None
+        # Last slash command registration ({"guild_id": id or None, "hash": ...}); None until recorded.
+        self.commands: dict | None = None
 
     # ---- access -------------------------------------------------------
     def guild(self, guild_id: int) -> GuildState:
@@ -148,11 +151,14 @@ class StateStore:
 
     # ---- persistence --------------------------------------------------
     def to_dict(self) -> dict:
-        return {
+        data = {
             "version": STATE_VERSION,
             "bot_version": self.bot_version,
             "guilds": {str(gid): g.to_dict() for gid, g in sorted(self.guilds.items())},
         }
+        if self.commands is not None:
+            data["commands"] = self.commands
+        return data
 
     def load(self) -> bool:
         """Load state from disk. Returns False if no state file exists yet."""
@@ -163,6 +169,9 @@ class StateStore:
         self.guilds = {int(gid): GuildState.from_dict(g) for gid, g in (data.get("guilds") or {}).items()}
         bot_version = data.get("bot_version")
         self.bot_version = bot_version if isinstance(bot_version, str) and bot_version else None
+        commands = data.get("commands")
+        valid = isinstance(commands, dict) and type(commands.get("guild_id", 0)) in (int, type(None))
+        self.commands = commands if valid else None
         return True
 
     def save(self) -> None:
