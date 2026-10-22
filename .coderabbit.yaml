@@ -1,0 +1,29 @@
+# CodeRabbit settings for TwitchDiscordBot.
+# Shared rules come from the central dxcufgb/coderabbit repository (inheritance: true), and CodeRabbit reads
+# CLAUDE.md (and its Review focus) as code guidelines. Only what is specific to this repository is here.
+# Check the merged result on a pull request with: @coderabbitai configuration
+inheritance: true
+
+reviews:
+  path_instructions:
+    - path: "twitchbot/updater.py"
+      instructions: |
+        Runs as root / SYSTEM as a stand-alone script (`python -I`): standard library only, and it must not import
+        the rest of the bot. Keep `TOKEN_OPTIONAL = True`. Without a token no Authorization header; a token goes
+        only to api.github.com, never to the asset redirect, a log or a command line. Downloads must match
+        SHA256SUMS.txt. Old installed updaters (2.2.0+) download the archive names and run the archive's installer
+        with the options listed in CLAUDE.md: flag anything that breaks them.
+    - path: "twitchbot/**/*.py"
+      instructions: |
+        Async bot code: no blocking calls (requests, time.sleep, sync network or file I/O beyond the small
+        state.json save), one shared Twitch client, 100-id batches, POLL_INTERVAL >= 15, and the poll loop must
+        never die on an exception. Never log the Discord token, the Twitch secret or .env contents; keep the
+        exact text "Discord rejected the bot token" (CI greps it). Check AUDIT.md findings do not come back.
+    - path: "packaging/**"
+      instructions: |
+        Linux: `.env` stays root:twitchbot 640, program files and .venv root-owned and not group/other-writable,
+        upgrades keep `.env`, `--uninstall --purge` removes everything. Windows: `.env` ACL Administrators/SYSTEM
+        plus read for LOCAL SERVICE only. Auto-update stays opt-in and never requires a token.
+    - path: "tests/**"
+      instructions: |
+        Tests use fakes (FakeTwitch, no network). Flag tests that hit the network or depend on wall-clock timing.
