@@ -19,11 +19,12 @@
 .PARAMETER NoService     Don't register the scheduled task.
 .PARAMETER SkipCheck     Don't verify the credentials against Discord/Twitch.
 .PARAMETER Yes           Never prompt; credentials come from DISCORD_TOKEN, TWITCH_APP_ID, TWITCH_APP_SECRET (OWNER_ID optional).
-.PARAMETER AutoUpdate    Also turn on automatic updates (daily scheduled task running as SYSTEM). The GitHub token comes
-                         from the UPDATE_GITHUB_TOKEN environment variable or a prompt.
+.PARAMETER AutoUpdate    Also turn on automatic updates (daily scheduled task running as SYSTEM). No GitHub token is needed
+                         (the repository is public); an optional one (for a private fork) comes from the
+                         UPDATE_GITHUB_TOKEN environment variable only.
 .PARAMETER NoAutoUpdate  Turn automatic updates off. Without -AutoUpdate/-NoAutoUpdate an upgrade keeps the current choice.
-.PARAMETER EnableAutoUpdate   Only turn on automatic updates (or replace the stored token), then exit.
-.PARAMETER DisableAutoUpdate  Only turn off automatic updates and delete the stored token, then exit.
+.PARAMETER EnableAutoUpdate   Only turn on automatic updates (or replace or delete a stored token), then exit.
+.PARAMETER DisableAutoUpdate  Only turn off automatic updates and delete a stored token, then exit.
 #>
 [CmdletBinding()]
 param(
@@ -86,8 +87,9 @@ function Confirm-No($question) {
 }
 
 # ------------------------------------------------------------------ automatic updates (opt-in)
-# A scheduled task runs auto-update.ps1 daily as SYSTEM. The repository is private, so it needs a GitHub token,
-# kept in updater\github-token, separate from .env and readable by Administrators and SYSTEM only.
+# A scheduled task runs auto-update.ps1 daily as SYSTEM. The repository is public, so it needs no GitHub token; an
+# optional one (UPDATE_GITHUB_TOKEN, or stored by an earlier version) is kept in updater\github-token, separate from
+# .env and readable by Administrators and SYSTEM only.
 function Test-AutoUpdate {
     return [bool](Get-ScheduledTask -TaskName $UpdateTaskName -ErrorAction SilentlyContinue)
 }
@@ -100,24 +102,27 @@ function Protect-UpdaterDir {
     }
 }
 function Save-UpdateToken {
+    # Optional: without a token the updater downloads anonymously (the repository is public).
     $token = $env:UPDATE_GITHUB_TOKEN
-    if (-not $token -and (Test-Path $TokenFile) -and ($Yes -or -not (Confirm-No 'Replace the stored GitHub token?'))) {
-        Info 'Keeping the stored GitHub token'
-        return
-    }
-    if (-not $token) {
-        if ($Yes) { Fail 'Set the UPDATE_GITHUB_TOKEN environment variable to turn on automatic updates with -Yes.' }
-        Write-Host ''
-        Write-Host 'Automatic updates download new releases from the private GitHub repository dxcufgb/TwitchDiscordBot,'
-        Write-Host 'so they need a GitHub token (input is hidden). Create one at https://github.com/settings/personal-access-tokens:'
-        Write-Host 'Fine-grained token -> Resource owner dxcufgb -> Only select repositories: TwitchDiscordBot ->'
-        Write-Host 'Repository permissions: Contents = Read-only (nothing else). Pick an expiry date you will remember.'
-        $s = Read-Host -AsSecureString 'GitHub token'
+    if (-not $token -and (Test-Path $TokenFile)) {
+        if ($Yes -or -not (Confirm-No 'Replace or delete the stored GitHub token (not needed: the repository is public)?')) {
+            Info 'Keeping the stored GitHub token'
+            return
+        }
+        $s = Read-Host -AsSecureString 'New GitHub token (input is hidden; Enter to delete the stored one)'
         $b = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($s)
         try { $token = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($b) } finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($b) }
+        if (-not "$token".Trim()) {
+            Remove-Item -Force $TokenFile
+            Info 'Deleted the stored GitHub token; updates are downloaded without one'
+            return
+        }
     }
     $token = "$token".Trim()
-    if (-not $token) { Fail 'A GitHub token is required for automatic updates.' }
+    if (-not $token) {
+        Info 'No GitHub token needed: the repository is public (for a private fork, set UPDATE_GITHUB_TOKEN)'
+        return
+    }
     if ($token -notmatch '^[A-Za-z0-9_]+$') { Fail 'That does not look like a GitHub token (letters, digits and _ only).' }
     Protect-UpdaterDir
     [IO.File]::WriteAllText($TokenFile, $token)
@@ -141,6 +146,13 @@ function Enable-AutoUpdate {
         Fail "$InstallDir has no auto-update.ps1; install this release first (install.cmd -AutoUpdate)."
     }
     Save-UpdateToken
+    $installedUpdater = Join-Path $InstallDir 'twitchbot\updater.py'
+    $tokenOptional = (Test-Path $installedUpdater) -and
+        (Select-String -Quiet -Path $installedUpdater -Pattern '^TOKEN_OPTIONAL = True$')
+    if (-not (Test-Path $TokenFile) -and -not $tokenOptional) {
+        # The installed version's updater (releases before this change) still needs a token.
+        Fail "The version installed in $InstallDir needs a GitHub token for automatic updates; install this release first (install.cmd -AutoUpdate)."
+    }
     Protect-UpdaterDir
     Register-UpdateTask
     Info "Automatic updates are on: a newer release is installed daily (log: $UpdaterDir\update.log)."
@@ -153,10 +165,6 @@ function Disable-AutoUpdate {
 $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
 if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     Fail 'Please run as administrator (double-click install.cmd, or use an elevated PowerShell).'
-}
-
-if (($AutoUpdate -or $EnableAutoUpdate) -and $Yes -and -not $env:UPDATE_GITHUB_TOKEN -and -not (Test-Path $TokenFile)) {
-    Fail 'Set the UPDATE_GITHUB_TOKEN environment variable to turn on automatic updates with -Yes.'
 }
 
 # ------------------------------------------------------------------ stop / remove the task only
@@ -174,7 +182,7 @@ if ($StopService -or $RemoveService) {
 # ------------------------------------------------------------------ turn automatic updates on / off only
 if ($DisableAutoUpdate) {
     Disable-AutoUpdate
-    Info 'Automatic updates are off and the GitHub token was deleted.'
+    Info 'Automatic updates are off (a stored GitHub token was deleted).'
     exit 0
 }
 if ($EnableAutoUpdate) {
@@ -194,7 +202,7 @@ if ($Uninstall) {
             Info "Deleting $InstallDir (including settings, data and logs)"
             Remove-Item -Recurse -Force $InstallDir
         } else {
-            Info "Removing program files from $InstallDir (keeping .env, data and logs; the GitHub token is deleted)"
+            Info "Removing program files from $InstallDir (keeping .env, data and logs; a stored GitHub token is deleted)"
             Get-ChildItem -Force $InstallDir | Where-Object { $_.Name -notin @('.env', 'data', 'logs') } |
                 Remove-Item -Recurse -Force
         }
@@ -258,7 +266,7 @@ if (-not $Reconfigure) {
     }
     # Ask once, on a fresh interactive install; upgrades keep whatever was chosen before.
     if (-not ($AutoUpdate -or $NoAutoUpdate) -and -not (Test-Path (Join-Path $InstallDir 'Main.py')) -and
-        (Confirm-No 'Install new releases automatically (daily; needs a read-only GitHub token)?')) {
+        (Confirm-No 'Install new releases automatically (daily)?')) {
         $AutoUpdate = $true
     }
     Stop-Bot
@@ -285,7 +293,7 @@ if (-not $Reconfigure) {
         if (Test-Path $code) { Remove-Item -Recurse -Force $code }
         Copy-Item -Recurse (Join-Path $SrcDir 'twitchbot') $InstallDir
         foreach ($f in 'Main.py', 'requirements.txt', 'VERSION', 'CHANGES.md', '.env.example', 'start-bot.cmd', 'install.ps1',
-                       'install.cmd', 'uninstall.cmd', 'auto-update.ps1', 'README.md') {
+                       'install.cmd', 'uninstall.cmd', 'auto-update.ps1', 'README.md', 'LICENSE') {
             $p = Join-Path $SrcDir $f
             if (Test-Path $p) { Copy-Item -Force $p $InstallDir }
         }
@@ -413,16 +421,12 @@ if ($AutoUpdate) {
 } elseif ($NoAutoUpdate) {
     if ((Test-AutoUpdate) -or (Test-Path $UpdaterDir)) {
         Disable-AutoUpdate
-        Info 'Automatic updates are off and the GitHub token was deleted.'
+        Info 'Automatic updates are off (a stored GitHub token was deleted).'
     }
 } elseif (Test-AutoUpdate) {
-    if (Test-Path $TokenFile) {
-        Protect-UpdaterDir
-        Register-UpdateTask  # refresh the task; the choice and the token stay as they are
-        Info "Keeping automatic updates on (turn off: $InstallDir\install.cmd -DisableAutoUpdate)"
-    } else {
-        Warn "Automatic updates are on but $TokenFile is missing; run: $InstallDir\install.cmd -EnableAutoUpdate"
-    }
+    Protect-UpdaterDir
+    Register-UpdateTask  # refresh the task; the choice and a stored token stay as they are
+    Info "Keeping automatic updates on (turn off: $InstallDir\install.cmd -DisableAutoUpdate)"
 }
 
 # ------------------------------------------------------------------ service

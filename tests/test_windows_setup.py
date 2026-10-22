@@ -123,3 +123,20 @@ def test_setup_uses_the_unified_name_and_the_stamped_package():
     text = ISS.read_text(encoding="ascii")
     assert re.search(r"^OutputBaseFilename=twitchdiscordbot-\{#AppVersion\}-setup\r?$", text, re.M)
     assert re.search(r'^Source: "\{#CodeDir\}\\\*\.py"; DestDir: "\{app\}\\twitchbot"', text, re.M)
+
+
+def test_auto_update_needs_no_token():
+    install = INSTALL_PS1.read_text(encoding="ascii")
+    assert "A GitHub token is required" not in install
+    assert "to turn on automatic updates with -Yes" not in install
+    save = install[install.index("function Save-UpdateToken {") :]
+    save = save[: save.index("\n}\n")]
+    # The only prompt is the optional replacement of an already stored token, behind a default-no question.
+    assert save.count("Read-Host") == 1 and "Confirm-No" in save
+    assert "No GitHub token needed" in save
+    updater = AUTO_UPDATE_PS1.read_text(encoding="ascii")
+    assert "no GitHub token in" not in updater
+    assert "if (Test-Path $TokenFile) { $all += @('--token-file', $TokenFile) }" in updater
+    wizard = ISS.read_text(encoding="ascii")
+    assert "The repository is private" not in wizard and "needs a read-only GitHub token" not in wizard
+    assert "GitHub &token (optional):" in wizard

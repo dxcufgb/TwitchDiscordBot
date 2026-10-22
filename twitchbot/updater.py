@@ -3,8 +3,8 @@
 Run by the platform wrappers (``auto-update.sh`` on Linux, ``auto-update.ps1`` on Windows) with the bot's
 own virtual environment, as a script and in isolated mode::
 
-    python -I twitchbot/updater.py --install-dir DIR --token-file FILE check
-    python -I twitchbot/updater.py --install-dir DIR --token-file FILE download --dest EMPTY_DIR
+    python -I twitchbot/updater.py --install-dir DIR [--token-file FILE] check
+    python -I twitchbot/updater.py --install-dir DIR [--token-file FILE] download --dest EMPTY_DIR
 
 ``check`` only reports. ``download`` fetches the platform's release archive and ``SHA256SUMS.txt``,
 verifies the checksum, extracts the archive into ``--dest`` and prints the extracted release folder on
@@ -14,9 +14,11 @@ wrapper copies that notice into the bot's data folder and runs the release's ins
 Exit codes: 0 = a newer release is available (and, for ``download``, ready), 3 = already up to date,
 1 = error. Standard library only: this file must not import the rest of the bot.
 
-The repository is private, so a GitHub token (fine-grained, read-only *Contents*) is read from
-``--token-file``. It is sent to ``api.github.com`` only, never to the host GitHub redirects asset
-downloads to, and is never logged.
+The repository is public, so no GitHub token is needed: GitHub allows 60 unauthenticated API requests an hour per
+IP address, and a daily run makes at most four. A token is optional (``--token-file``; installs that stored one keep
+using it, and a private fork needs one). It is sent to ``api.github.com`` only, never to the host GitHub
+redirects asset downloads to, and is never logged. If GitHub rejects it (HTTP 401, e.g. expired), the run goes on
+without it.
 """
 
 from __future__ import annotations
@@ -30,6 +32,7 @@ import re
 import shutil
 import sys
 import tarfile
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -57,6 +60,10 @@ CHUNK = 64 * 1024
 EXIT_OK = 0
 EXIT_ERROR = 1
 EXIT_UP_TO_DATE = 3
+
+# auto-update.sh looks for this exact line to tell whether the installed updater works without a token (older ones
+# require --token-file). Keep it.
+TOKEN_OPTIONAL = True
 
 _VERSION_RE = re.compile(r"^v?(\d+(?:\.\d+)*)$")
 _SUM_RE = re.compile(r"^([0-9a-fA-F]{64}) [ *](.+)$")
@@ -152,8 +159,10 @@ def urllib_transport(url: str, headers: dict[str, str], timeout: float) -> Respo
 
 
 class GitHub:
-    def __init__(self, token: str, transport: Transport = urllib_transport, timeout: float = TIMEOUT) -> None:
-        self._token = token
+    def __init__(
+        self, token: str | None = None, transport: Transport = urllib_transport, timeout: float = TIMEOUT
+    ) -> None:
+        self._token = token or None  # None: unauthenticated (the repository is public)
         self._transport = transport
         self._timeout = timeout
 
@@ -164,10 +173,22 @@ class GitHub:
             if parts.scheme != "https" or not parts.hostname:
                 raise UpdateError(f"Refusing to download from a non-HTTPS URL ({parts.scheme}://{parts.hostname})")
             headers = {"Accept": accept, "User-Agent": USER_AGENT}
-            if parts.hostname.lower() == API_HOST and parts.port in (None, 443):
-                headers["Authorization"] = f"Bearer {self._token}"
+            api = parts.hostname.lower() == API_HOST and parts.port in (None, 443)
+            authenticated = api and self._token is not None
+            if api:
                 headers["X-GitHub-Api-Version"] = "2022-11-28"
+            if authenticated:
+                headers["Authorization"] = f"Bearer {self._token}"
             resp = self._transport(url, headers, self._timeout)
+            if resp.status == 401 and authenticated:
+                # An expired or revoked token must not stop the updates of a public repository: go on without it.
+                log.warning(
+                    "GitHub rejected the token (HTTP 401, expired or revoked?); continuing without one. The repository "
+                    "is public, so no token is needed: turn automatic updates off and on again to delete it, or store "
+                    "a new one if this is a private fork."
+                )
+                self._token = None
+                continue  # the same URL again, unauthenticated
             if resp.status in (301, 302, 303, 307, 308):
                 location = resp.headers.get("location")
                 if not location:
@@ -176,7 +197,8 @@ class GitHub:
                 continue
             if resp.status == 200:
                 return resp
-            raise UpdateError(_http_error(resp.status, parts.hostname))
+            host = API_HOST if api else parts.hostname
+            raise UpdateError(_http_error(resp.status, host, resp.headers, authenticated))
         raise UpdateError("Too many redirects")
 
     def get_json(self, url: str) -> dict:
@@ -208,17 +230,39 @@ def _capped(chunks: Iterator[bytes], limit: int) -> Iterator[bytes]:
         yield chunk
 
 
-def _http_error(status: int, host: str) -> str:
-    if host == API_HOST and status == 401:
-        return "GitHub rejected the token (HTTP 401). Create a new one and enable auto-update again."
-    if host == API_HOST and status == 404:
-        return (
-            f"GitHub returned 404: {REPO} has no published release yet, or the token cannot read it "
-            "(it needs read-only Contents access to that repository)."
-        )
-    if host == API_HOST and status in (403, 429):
-        return f"GitHub refused the request (HTTP {status}; rate limit, or the token lacks Contents access)."
+def _http_error(status: int, host: str, headers: dict[str, str] | None = None, authenticated: bool = False) -> str:
+    headers = headers or {}
+    if host != API_HOST:
+        return f"HTTP {status} from {host}"
+    if status == 401:
+        return "GitHub answered HTTP 401 (authentication required) for a request without a token."
+    if status == 404:
+        if authenticated:
+            return (
+                f"GitHub returned 404: {REPO} has no published release yet, or the token cannot read it "
+                "(it needs read-only Contents access to that repository)."
+            )
+        return f"GitHub returned 404: {REPO} has no published release yet, or it is not public (then it needs a token)."
+    if status in (403, 429):
+        if status == 429 or headers.get("x-ratelimit-remaining") == "0" or "retry-after" in headers:
+            limit = "the token's hourly limit" if authenticated else "60 requests an hour per IP address, no token"
+            return f"GitHub's API rate limit is used up (HTTP {status}; {limit}). {_retry_hint(headers)}"
+        if authenticated:
+            return f"GitHub refused the request (HTTP {status}; the token may lack read-only Contents access)."
+        return f"GitHub refused the request (HTTP {status})."
     return f"HTTP {status} from {host}"
+
+
+def _retry_hint(headers: dict[str, str]) -> str:
+    """When to try again, from GitHub's ``retry-after`` / ``x-ratelimit-reset`` headers."""
+    retry_after = headers.get("retry-after", "").strip()
+    if retry_after.isdigit():
+        return f"Try again in {int(retry_after)} seconds; the next daily check retries anyway."
+    reset = headers.get("x-ratelimit-reset", "").strip()
+    if reset.isdigit():
+        when = time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(int(reset)))
+        return f"Try again after {when}; the next daily check retries anyway."
+    return "Try again later; the next daily check retries anyway."
 
 
 # ---------------------------------------------------------------------------------------------- releases
@@ -390,7 +434,9 @@ def default_platform() -> str:
 def main(argv: list[str] | None = None, transport: Transport = urllib_transport) -> int:
     parser = argparse.ArgumentParser(description="Check for and download TwitchDiscordBot releases.")
     parser.add_argument("--install-dir", type=Path, required=True, help="the bot's installation folder")
-    parser.add_argument("--token-file", type=Path, required=True, help="file holding the GitHub token")
+    parser.add_argument(
+        "--token-file", type=Path, help="file holding a GitHub token (optional: the repository is public)"
+    )
     parser.add_argument("--platform", choices=("linux", "windows"), default=default_platform())
     parser.add_argument("--log-file", type=Path, help="also append log lines to this file")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -409,7 +455,7 @@ def main(argv: list[str] | None = None, transport: Transport = urllib_transport)
     log.propagate = False
 
     try:
-        gh = GitHub(read_token(args.token_file), transport)
+        gh = GitHub(read_token(args.token_file) if args.token_file else None, transport)
         _, release = find_update(gh, args.install_dir.resolve())
         if release is None:
             return EXIT_UP_TO_DATE

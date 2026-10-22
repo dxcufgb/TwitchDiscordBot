@@ -27,8 +27,7 @@ command under *Server Settings → Integrations → TwitchBot*.
 curl -fsSL https://raw.githubusercontent.com/dxcufgb/install/main/install.sh | sudo bash -s twitchdiscordbot
 ```
 
-This repository is private, so it asks for a fine-grained GitHub token with read-only *Contents* access to this
-repository. Or download `twitchdiscordbot-linux.tar.gz` from the [latest release](../../releases/latest), then
+Or download `twitchdiscordbot-linux.tar.gz` from the [latest release](../../releases/latest), then
 `tar xzf twitchdiscordbot-linux.tar.gz`, `cd twitchdiscordbot-X.Y.Z`, `sudo ./install.sh`.
 
 | Option | Meaning |
@@ -68,10 +67,10 @@ the archive covers reconfiguring and uninstalling.
 
 **Automatic updates (opt-in).** The installers can set up a daily job (systemd timer as root on Linux, scheduled
 task as SYSTEM on Windows) that installs newer releases through the same upgrade path, verifies them against
-`SHA256SUMS.txt`, and rolls back if the new version doesn't start. Because this repository is private, it needs
-a fine-grained GitHub token with read-only *Contents* access, stored separately from `.env`. Turn it on with
+`SHA256SUMS.txt`, and rolls back if the new version doesn't start. No GitHub token is needed: the repository is
+public (a token is optional, for a private fork; it is stored separately from `.env`). Turn it on with
 `install.sh --auto-update` / `--enable-auto-update`, `install.cmd -AutoUpdate` / `-EnableAutoUpdate`, or the setup
-wizard's checkbox (on Linux the one-liner's token can be reused for it); see
+wizard's checkbox; see
 [packaging/README.md](packaging/README.md#automatic-updates). The logic lives in `twitchbot/updater.py` (standard
 library only) with thin wrappers in `packaging/linux/auto-update.sh` and `packaging/windows/auto-update.ps1`. You still need a Discord application and a Twitch
 application first (steps 1–2 below).
@@ -139,7 +138,7 @@ turned off in the Developer Portal, `admins` works like `owner` and the log says
 | `data/state.json` | Alert channels, tracked streams, filters and roles per server, and the last bot version that ran (written atomically) |
 | `data/update-notice.json` | Release notes left by the auto-updater for the update DM; deleted once read |
 | `logs/bot.log` | Rotating log (5 × 2 MB) |
-| `updater/github-token` | Only with automatic updates: the GitHub token (root / Administrators+SYSTEM only) |
+| `updater/github-token` | Optional, only with automatic updates: a GitHub token, not needed for this public repository (root / Administrators+SYSTEM only) |
 
 ### Upgrading from the 1.x bot
 
@@ -191,8 +190,8 @@ the [Renovate GitHub app](https://github.com/apps/renovate) is enabled for the r
 
 See [AUDIT.md](AUDIT.md) for the audit that led to the 2.0 rewrite.
 
-The **Security** workflow (`.github/workflows/security.yml`; GitHub's secret scanning and CodeQL are not available for
-this private repository) runs on every pull request, on pushes to `main` and weekly: `Secrets (gitleaks)` scans the
+The **Security** workflow (`.github/workflows/security.yml`; GitHub's own secret scanning and CodeQL also run on this
+public repository) runs on every pull request, on pushes to `main` and weekly: `Secrets (gitleaks)` scans the
 whole git history, `Code (Semgrep)` runs the Semgrep registry rules, `Dependencies` runs pip-audit on
 `requirements.txt` and `requirements-dev.txt`. The same checks locally (gitleaks 8.30.1, semgrep 1.180.0, pip-audit
 2.10.1):
@@ -234,3 +233,7 @@ or release already exists). Nothing is published if any job fails. Release files
 | `SHA256SUMS.txt` | checksums of every other file (`sha256sum -c`) |
 
 To inspect them locally, run `python scripts/build_release.py --version 9.9.9`; they're written to `dist/`.
+
+## License
+
+[MIT](LICENSE)

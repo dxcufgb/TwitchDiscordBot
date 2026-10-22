@@ -8,8 +8,8 @@
 #   sudo /opt/twitchdiscordbot/auto-update.sh --check-update   the same; exit 0 = up to date, 10 = newer release
 #                                                              available, anything else = error
 #   --prefix DIR   the installation to update (default: the folder this script is in)
-# The GitHub token comes from $PREFIX/updater/github-token; without one, a token in INSTALL_GITHUB_TOKEN or
-# UPDATE_GITHUB_TOKEN is used for this run only (never stored, never on a command line).
+# No GitHub token is needed (the repository is public). An optional one comes from $PREFIX/updater/github-token, else
+# UPDATE_GITHUB_TOKEN or INSTALL_GITHUB_TOKEN for this run only (never stored, never on a command line).
 #
 # It downloads the newest release's twitchdiscordbot-X.Y.Z-linux.tar.gz, verifies it against SHA256SUMS.txt,
 # and runs that release's install.sh (the normal upgrade path, keeping .env and data/). If the upgrade fails,
@@ -30,6 +30,7 @@ MODE=update
 BOT_USER=""
 ROLLBACK_ERRORS=()
 TOKEN_TMP_DIR=""
+TOKEN_FILE=""  # empty: the updater runs without a token
 
 log() { printf '%s\n' "$*"; }
 die() { printf 'Error: %s\n' "$*" >&2; exit 1; }
@@ -47,7 +48,6 @@ main() {
         esac
         shift
     done
-    TOKEN_FILE="$PREFIX/updater/github-token"
     VENV_PY="$PREFIX/.venv/bin/python"
     [[ $EUID -eq 0 ]] || die "Please run as root: sudo $0"
     [[ -x $VENV_PY && -f $PREFIX/twitchbot/updater.py ]] || die "TwitchDiscordBot is not installed in $PREFIX."
@@ -59,9 +59,11 @@ main() {
         BOT_USER="$(sed -n 's/^User=//p' "$UNIT_FILE" | head -n1)"
     fi
     BOT_USER="${BOT_USER:-twitchbot}"
-    if [[ ! -f $TOKEN_FILE ]]; then
-        token_from_environment ||
-            die "No GitHub token in $TOKEN_FILE. Enable auto-update with: sudo $PREFIX/install.sh --enable-auto-update (or set UPDATE_GITHUB_TOKEN for this run only)"
+    if [[ -f $PREFIX/updater/github-token ]]; then
+        TOKEN_FILE="$PREFIX/updater/github-token"
+    elif ! token_from_environment && ! grep -qx 'TOKEN_OPTIONAL = True' "$PREFIX/twitchbot/updater.py"; then
+        # The installed version's updater (releases before this change) still requires a token: install this release once.
+        die "The updater of the version installed in $PREFIX needs a GitHub token. Run install.sh from the extracted folder of a newer release once (or set UPDATE_GITHUB_TOKEN for this run only)."
     fi
 
     local code=0 work new_dir
@@ -167,8 +169,12 @@ as_bot() {
 }
 
 updater() {
-    (cd / && "$VENV_PY" -I "$PREFIX/twitchbot/updater.py" --install-dir "$PREFIX" --token-file "$TOKEN_FILE" \
-        --platform linux "$@")
+    if [[ -n $TOKEN_FILE ]]; then
+        (cd / && "$VENV_PY" -I "$PREFIX/twitchbot/updater.py" --install-dir "$PREFIX" --token-file "$TOKEN_FILE" \
+            --platform linux "$@")
+    else
+        (cd / && "$VENV_PY" -I "$PREFIX/twitchbot/updater.py" --install-dir "$PREFIX" --platform linux "$@")
+    fi
 }
 
 program_entries() {  # everything in $PREFIX except settings, data, logs and the updater's own settings

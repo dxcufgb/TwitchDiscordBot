@@ -24,8 +24,7 @@ The installer asks for these values and checks them with Discord and Twitch befo
 curl -fsSL https://raw.githubusercontent.com/dxcufgb/install/main/install.sh | sudo bash -s twitchdiscordbot
 ```
 
-The repository is private, so it asks for a fine-grained GitHub token with read-only *Contents* access to this
-repository. Or download `twitchdiscordbot-linux.tar.gz`, `tar xzf twitchdiscordbot-linux.tar.gz`,
+Or download `twitchdiscordbot-linux.tar.gz`, `tar xzf twitchdiscordbot-linux.tar.gz`,
 `cd twitchdiscordbot-X.Y.Z`, `sudo ./install.sh` (from this folder: just `sudo ./install.sh`).
 
 | Option | Meaning |
@@ -111,11 +110,13 @@ belong to root and are not writable by the `twitchbot` user, which owns only `da
 `.env`. The installer enforces this on every install or upgrade (and recreates a virtual environment that other
 users could write to); the updater refuses to run if it finds it otherwise.
 
-**GitHub token.** The repository is private, so the updater needs a token. Create a *fine-grained personal
-access token* at <https://github.com/settings/personal-access-tokens>: *Resource owner* `dxcufgb`, *Only select
-repositories* -> `TwitchDiscordBot`, *Repository permissions* -> **Contents: Read-only**, nothing else. Give it
-an expiry date you will remember: when it expires, updates stop (the log says the token was rejected) until you
-store a new one with the "turn on" command below. The token is stored separately from the bot's settings, readable only by
+**GitHub token (optional).** The repository is public, so the updater needs no token: GitHub allows 60
+unauthenticated API requests an hour per IP address, and a daily run uses at most four. If GitHub's rate limit
+is used up anyway (for example behind an address shared with many others), the log says so and the next daily run
+tries again. A token is only needed for a private fork: a *fine-grained personal access token*
+(<https://github.com/settings/personal-access-tokens>) with **Contents: Read-only** access to that repository and
+nothing else. Installs that stored a token keep using it; if GitHub rejects it (for example after it expired), the
+updater logs a warning and goes on without it. A token is stored separately from the bot's settings, readable only by
 root (Linux, `/opt/twitchdiscordbot/updater/github-token`, mode 600) or by Administrators and SYSTEM (Windows,
 `C:\ProgramData\TwitchDiscordBot\updater\github-token`). It is only sent to `api.github.com` and never logged.
 
@@ -124,36 +125,38 @@ root (Linux, `/opt/twitchdiscordbot/updater/github-token`, mode 600) or by Admin
 | Task | Command |
 |---|---|
 | Turn on while installing | `sudo ./install.sh --auto-update` (a fresh interactive install also asks) |
-| Turn on later / replace the token | `sudo /opt/twitchdiscordbot/install.sh --enable-auto-update` |
-| Turn off (deletes the token) | `sudo /opt/twitchdiscordbot/install.sh --disable-auto-update` |
+| Turn on later / replace or delete a stored token | `sudo /opt/twitchdiscordbot/install.sh --enable-auto-update` |
+| Turn off (deletes a stored token) | `sudo /opt/twitchdiscordbot/install.sh --disable-auto-update` |
 | Check without installing | `sudo /opt/twitchdiscordbot/install.sh --check-update` (exit 0 = up to date, 10 = newer release available, other = error), or `sudo /opt/twitchdiscordbot/auto-update.sh --check` |
 | Update now | `sudo /opt/twitchdiscordbot/install.sh --update-now` (or `sudo /opt/twitchdiscordbot/auto-update.sh`, or `sudo systemctl start twitchdiscordbot-update`) |
 | Log | `journalctl -u twitchdiscordbot-update` |
 
-The token is asked for with hidden input. When you install with the one-liner, the installer offers to reuse the
-token you gave it (`INSTALL_GITHUB_TOKEN`). For `--yes`, pass it in the environment instead:
-`sudo UPDATE_GITHUB_TOKEN=… ./install.sh --yes --auto-update` (`INSTALL_GITHUB_TOKEN` works too). A token is never
-taken as an argument. `--check-update` and `--update-now` use the stored token; with automatic updates off they
-use one from `UPDATE_GITHUB_TOKEN` or `INSTALL_GITHUB_TOKEN` for that run only, without storing it.
+The installer does not ask for a token, and `--yes --auto-update` works without one. A token is stored only when
+one is offered: `UPDATE_GITHUB_TOKEN` in the environment, for a private fork
+(`sudo UPDATE_GITHUB_TOKEN=… ./install.sh --yes --auto-update`), or the token the one-liner was given (`INSTALL_GITHUB_TOKEN`; reused after
+asking, or without asking with `--yes`). A token is never taken as an argument. `--check-update` and `--update-now`
+use the stored token, else one from `UPDATE_GITHUB_TOKEN` or `INSTALL_GITHUB_TOKEN` for that run only (without
+storing it), else none.
 
 **Windows** (scheduled task *TwitchDiscordBot Update*, daily around 04:00 with a random delay of up to 4 hours,
 runs as SYSTEM):
 
 | Task | How |
 |---|---|
-| Turn on while installing | Setup wizard: tick *Install new releases automatically* and enter the token. Zip: `install.cmd -AutoUpdate` (a fresh interactive install also asks) |
-| Turn on later / replace the token | `C:\ProgramData\TwitchDiscordBot\install.cmd -EnableAutoUpdate` |
-| Turn off (deletes the token) | `C:\ProgramData\TwitchDiscordBot\install.cmd -DisableAutoUpdate` |
+| Turn on while installing | Setup wizard: tick *Install new releases automatically* (leave the optional token field empty). Zip: `install.cmd -AutoUpdate` (a fresh interactive install also asks) |
+| Turn on later / replace or delete a stored token | `C:\ProgramData\TwitchDiscordBot\install.cmd -EnableAutoUpdate` |
+| Turn off (deletes a stored token) | `C:\ProgramData\TwitchDiscordBot\install.cmd -DisableAutoUpdate` |
 | Check without installing | elevated PowerShell: `powershell -ExecutionPolicy Bypass -File C:\ProgramData\TwitchDiscordBot\auto-update.ps1 -Check` |
 | Update now | the same without `-Check`, or Task Scheduler -> *TwitchDiscordBot Update* -> Run |
 | Log | `C:\ProgramData\TwitchDiscordBot\updater\update.log` |
 
-Silent setup with automatic updates: set `UPDATE_GITHUB_TOKEN` in the environment and add
-`/MERGETASKS="autoupdate"`. The token is always passed through the environment, never on a command line.
+Silent setup with automatic updates: add `/MERGETASKS="autoupdate"` (and, only for a private fork, set
+`UPDATE_GITHUB_TOKEN` in the environment). A token is always passed through the environment, never on a command
+line.
 
 Running the installer again (by hand or by the updater) keeps the current choice: leaving the setup wizard's box
 unchecked, or omitting `--auto-update`/`-AutoUpdate`, does not turn updates off. Uninstalling (with or without
-purge) removes the timer or task, the updater files and the token.
+purge) removes the timer or task, the updater files and a stored token.
 
 ## Troubleshooting
 
