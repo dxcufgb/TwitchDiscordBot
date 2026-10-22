@@ -39,8 +39,7 @@ an update.
 - Security (`.github/workflows/security.yml`, required checks `Secrets (gitleaks)`, `Code (Semgrep)`, `Dependencies`; push to main, PRs, weekly): locally `gitleaks git --redact --log-opts="--full-history --diff-filter=tuxdb --diff-merges=first-parent HEAD" .` (only the checked-out history, like CI), `semgrep scan --metrics=off --error --severity WARNING --severity ERROR --config p/python --config p/javascript --config p/security-audit --config p/secrets --config p/github-actions --config r/bash`, and `pip-audit --strict -r requirements.txt` and `pip-audit --strict -r requirements-dev.txt`. Semgrep false positives: `# nosemgrep: <rule-id>` (Python, shell, YAML, PowerShell) on the matched line or the line immediately before it, with a reason; gitleaks: `.gitleaks.toml` with `[extend]` `useDefault = true`.
 
 ## Install on Linux
-`curl -fsSL https://raw.githubusercontent.com/dxcufgb/install/main/install.sh | sudo bash -s twitchdiscordbot`
-(private repo: it asks for a fine-grained token with read-only *Contents* access to this repository), or download
+`curl -fsSL https://raw.githubusercontent.com/dxcufgb/install/main/install.sh | sudo bash -s twitchdiscordbot`, or download
 `twitchdiscordbot-linux.tar.gz`, `tar xzf`, `cd twitchdiscordbot-X.Y.Z`, `sudo ./install.sh`. Common options (listed
 first by `--help`): (none), `--yes`/`-y`, `--auto-update`/`--no-auto-update`,
 `--enable-auto-update`/`--disable-auto-update`, `--check-update` (exit 0 up to date / 10 newer / other error),
@@ -74,7 +73,9 @@ the setup wizard gets the stamped package via `ISCC /DCodeDir=`). Release files:
   upgrades keep `.env`; `--uninstall --purge` removes everything. Keep it shellcheck-clean.
   Program files and `.venv` are `root:root` and not group/other-writable (`secure_program_files`); the
   bot writes only to `data/` and `logs/`.
-- **Auto-update** stays opt-in and runs as root / SYSTEM. The GitHub token lives in `updater/github-token`
+- **Auto-update** stays opt-in and runs as root / SYSTEM. The repository is public, so it needs no GitHub token
+  (no `Authorization` header without one; a 401 for a stored token falls back to none; a rate limit is a clear
+  error). An optional token lives in `updater/github-token`
   (root 600 / Administrators+SYSTEM only), goes only to `api.github.com`, never on a command line or in a
   log. Root must never run code the bot's account can change: a `.venv` that is not root-only is rebuilt
   (or refused), a Python under `/home` or `/root` is refused, and a symlinked `.env`/`data`/`logs` is
@@ -92,4 +93,5 @@ the setup wizard gets the stamped package via `ISCC /DCodeDir=`). Release files:
 - **Updater compatibility**: installed updaters (2.2.0 and later) download `twitchdiscordbot-X.Y.Z-linux.tar.gz` /
   `-windows.zip`, verify them against `SHA256SUMS.txt` and run the archive's `install.sh --yes --skip-check --prefix
   … --user … [--no-service]` / `install.ps1 -InstallDir … -Yes -SkipCheck [-NoService]`. Keep those names, that
-  archive layout and those options working.
+  archive layout and those options working. The line `TOKEN_OPTIONAL = True` in `updater.py` tells the wrappers and
+  installers that the installed updater runs without `--token-file` (older ones require it); keep it.

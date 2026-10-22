@@ -158,21 +158,106 @@ def test_older_release_is_not_installed(install):
     assert run(install, FakeGitHub(version="2.0.0"), "check") == updater.EXIT_UP_TO_DATE
 
 
-@pytest.mark.parametrize(("status", "text"), [(401, "rejected the token"), (404, "no published release")])
-def test_http_errors_are_explained(install, capsys, status, text):
-    def fake(url, headers, timeout):
-        return Response(status, {}, iter([b"{}"]))
+@pytest.mark.parametrize(
+    ("status", "headers", "text"),
+    [
+        (404, {}, "no published release"),
+        (403, {"x-ratelimit-remaining": "0", "x-ratelimit-reset": "1893456000"}, "rate limit is used up"),
+        (429, {"retry-after": "60"}, "Try again in 60 seconds"),
+        (403, {}, "refused the request"),
+    ],
+)
+def test_http_errors_are_explained(install, capsys, status, headers, text):
+    def fake(url, headers_, timeout):
+        return Response(status, headers, iter([b"{}"]))
 
     assert run(install, fake, "check") == updater.EXIT_ERROR
     err = capsys.readouterr().err
     assert text in err
+    assert "Traceback" not in err
     assert TOKEN not in err
+
+
+def test_rate_limit_without_token_is_a_clear_error(install, capsys):
+    folder, _ = install
+
+    def fake(url, headers, timeout):
+        return Response(403, {"x-ratelimit-remaining": "0", "x-ratelimit-reset": "1893456000"}, iter([b"{}"]))
+
+    assert updater.main(["--install-dir", str(folder), "--platform", "linux", "check"], fake) == updater.EXIT_ERROR
+    err = capsys.readouterr().err
+    assert "rate limit is used up" in err and "60 requests an hour" in err and "2030-01-01 00:00 UTC" in err
+    assert "Traceback" not in err
+
+
+def test_rejected_token_falls_back_to_no_token(install, capsys):
+    # An expired or revoked token must not stop the updates: the repository is public.
+    fake = FakeGitHub()
+    real = fake.__call__
+
+    def rejecting(url, headers, timeout):
+        if "Authorization" in headers:
+            fake.calls.append((url, dict(headers)))
+            return Response(401, {}, iter([b"{}"]))
+        return real(url, headers, timeout)
+
+    assert run(install, rejecting, "check") == updater.EXIT_OK
+    assert [("Authorization" in headers) for _, headers in fake.calls] == [True, False]
+    err = capsys.readouterr().err
+    assert "rejected the token" in err and TOKEN not in err
+
+
+def test_unauthenticated_401_is_an_error(install, capsys):
+    folder, _ = install
+
+    def fake(url, headers, timeout):
+        return Response(401, {}, iter([b"{}"]))
+
+    assert updater.main(["--install-dir", str(folder), "check"], fake) == updater.EXIT_ERROR
+    assert "HTTP 401" in capsys.readouterr().err
 
 
 def test_missing_token_file(tmp_path, capsys):
     code = updater.main(["--install-dir", str(tmp_path), "--token-file", str(tmp_path / "nope"), "check"], FakeGitHub())
     assert code == updater.EXIT_ERROR
     assert "Cannot read the GitHub token file" in capsys.readouterr().err
+
+
+def test_works_without_a_token(install, tmp_path, capsys):
+    # The repository is public: no --token-file, no Authorization header anywhere.
+    folder, _ = install
+    fake = FakeGitHub()
+    args = ["--install-dir", str(folder), "--platform", "linux", "download", "--dest", str(tmp_path / "work")]
+    assert updater.main(args, fake) == updater.EXIT_OK
+    assert fake.calls and all("Authorization" not in headers for _, headers in fake.calls)
+    assert any(url.startswith(CDN) for url, _ in fake.calls)
+    assert any(url.startswith(API) and headers.get("X-GitHub-Api-Version") for url, headers in fake.calls)
+    root = Path(capsys.readouterr().out.strip().splitlines()[-1])
+    assert (root / "install.sh").is_file()
+
+
+def test_token_is_used_when_configured(install):
+    fake = FakeGitHub()
+    assert run(install, fake, "check") == updater.EXIT_OK
+    assert fake.calls[0][1]["Authorization"] == f"Bearer {TOKEN}"
+
+
+def test_github_client_without_token_sends_no_authorization():
+    seen = []
+
+    def fake(url, headers, timeout):
+        seen.append(headers)
+        return Response(200, {}, iter([b"{}"]))
+
+    GitHub(None, fake).get_json(f"{API}/releases/latest")
+    GitHub("", fake).get_json(f"{API}/releases/latest")
+    assert all("Authorization" not in headers for headers in seen)
+
+
+def test_token_optional_marker_is_present():
+    # auto-update.sh greps the installed updater for this line before calling it without --token-file.
+    text = Path(updater.__file__).read_text(encoding="utf-8")
+    assert "\nTOKEN_OPTIONAL = True\n" in text
 
 
 # ------------------------------------------------------------------------------------------- download

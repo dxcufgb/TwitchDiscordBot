@@ -14,9 +14,10 @@
 ; the environment and run:  setup.exe /VERYSILENT /SUPPRESSMSGBOXES
 ; Silent uninstall: unins000.exe /VERYSILENT [/PURGE]   (/PURGE also deletes settings and data)
 ;
-; Automatic updates (opt-in): the unchecked "autoupdate" task asks for a GitHub token and passes -AutoUpdate to
-; install.ps1. Silent: also set UPDATE_GITHUB_TOKEN and add /MERGETASKS="autoupdate". Leaving the box unchecked
-; keeps the current choice; turn it off with install.cmd -DisableAutoUpdate.
+; Automatic updates (opt-in): the unchecked "autoupdate" task passes -AutoUpdate to install.ps1. No GitHub token is
+; needed (the repository is public); its page takes an optional one for a private fork. Silent: add
+; /MERGETASKS="autoupdate" (and set UPDATE_GITHUB_TOKEN only for a private fork). Leaving the box unchecked keeps the
+; current choice; turn it off with install.cmd -DisableAutoUpdate.
 
 #ifndef AppVersion
   #error Pass the version, e.g. ISCC /DAppVersion=2.0.1 TwitchDiscordBot.iss
@@ -60,7 +61,7 @@ UninstallDisplayName={#AppName}
 WelcomeLabel2=This will install [name/ver] on your computer.%n%nThe bot runs in the background as a Windows service account, starts with Windows and posts an alert in your Discord server when the Twitch channels you track go live.%n%nPython is installed automatically if it is missing. Have your Discord bot token and Twitch application Client ID/secret ready.
 
 [Tasks]
-Name: "autoupdate"; Description: "Install new releases &automatically (daily; needs a read-only GitHub token)"; Flags: unchecked
+Name: "autoupdate"; Description: "Install new releases &automatically (daily)"; Flags: unchecked
 
 [Files]
 Source: "{#CodeDir}\*.py"; DestDir: "{app}\twitchbot"; Flags: ignoreversion
@@ -69,6 +70,7 @@ Source: "..\..\requirements.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\.env.example"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\start-bot.cmd"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\README.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "install.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "install.cmd"; DestDir: "{app}"; Flags: ignoreversion
 Source: "auto-update.ps1"; DestDir: "{app}"; Flags: ignoreversion
@@ -89,7 +91,7 @@ Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}\.venv"
 Type: filesandordirs; Name: "{app}\twitchbot"
-; Automatic updates: settings and the GitHub token (always removed, the token is a secret).
+; Automatic updates: settings, log and an optional GitHub token (always removed, a token is a secret).
 Type: filesandordirs; Name: "{app}\updater"
 Type: files; Name: "{app}\VERSION"
 Type: files; Name: "{app}\CHANGES.md"
@@ -203,15 +205,15 @@ begin
   CredPage.Add('Your Discord &user ID, allows /restart (optional):', False);
 
   HadToken := FileExists(TokenFile);
-  Intro := 'The repository is private, so downloading new releases needs a GitHub token. Create one at' + #13#10 +
-    'https://github.com/settings/personal-access-tokens: Fine-grained token -> Resource owner dxcufgb ->' + #13#10 +
-    'Only select repositories: TwitchDiscordBot -> Repository permissions: Contents = Read-only.' + #13#10#13#10 +
-    'It is stored readable by Administrators and SYSTEM only, separate from the bot''s settings.';
+  Intro := 'The repository is public, so no GitHub token is needed: leave the field empty and click Next.' + #13#10#13#10 +
+    'A token is only needed for a private fork: a fine-grained token with read-only Contents access to it' + #13#10 +
+    '(https://github.com/settings/personal-access-tokens). It is stored readable by Administrators and' + #13#10 +
+    'SYSTEM only, separate from the bot''s settings.';
   if HadToken then
     Intro := Intro + #13#10#13#10 + 'A token is already stored. Leave the field empty to keep it.';
   TokenPage := CreateInputQueryPage(wpSelectTasks, 'Automatic updates',
     'A daily task installs new releases of the bot.', Intro);
-  TokenPage.Add('GitHub &token:', True);
+  TokenPage.Add('GitHub &token (optional):', True);
 end;
 
 function ShouldSkipPage(PageID: Integer): Boolean;
@@ -272,12 +274,13 @@ begin
   if (TokenPage <> nil) and (CurPageID = TokenPage.ID) then
   begin
     Token := Trim(TokenPage.Values[0]);
-    if (Token = '') and HadToken then
+    { Optional: empty means no token (or keep the stored one). }
+    if Token = '' then
       exit;
     if not ValidToken(Token) then
     begin
-      MsgBox('Please enter a GitHub token (letters, digits and _ only), or go back and clear the automatic updates box.',
-        mbError, MB_OK);
+      MsgBox('That does not look like a GitHub token (letters, digits and _ only). Leave the field empty to install ' +
+        'without one; the repository is public.', mbError, MB_OK);
       Result := False;
     end;
     exit;
@@ -379,8 +382,8 @@ begin
   { In silent mode the credentials come from the caller's environment instead (install.ps1 -Yes reads them). }
   if CredsEntered then
     SetCredentialEnvironment(True);
-  { Unchecked keeps the current choice. The token goes through the environment, never the command line;
-    in silent mode it comes from the caller's UPDATE_GITHUB_TOKEN. }
+  { Unchecked keeps the current choice. An optional token goes through the environment, never the command line;
+    in silent mode it comes from the caller's UPDATE_GITHUB_TOKEN, if set. }
   Extra := '';
   TokenSet := False;
   if WizardIsTaskSelected('autoupdate') then

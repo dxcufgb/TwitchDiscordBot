@@ -63,6 +63,7 @@ COMMON = [
     ("requirements.txt", "requirements.txt", False),
     (".env.example", ".env.example", False),
     ("packaging/README.md", "README.md", False),
+    ("LICENSE", "LICENSE", False),
 ]
 LINUX = [
     ("packaging/linux/install.sh", "install.sh", True),
@@ -197,7 +198,6 @@ def release_notes(version: str) -> str:
 curl -fsSL https://raw.githubusercontent.com/dxcufgb/install/main/install.sh | sudo bash -s {NAME}
 ```
 
-It asks for a fine-grained GitHub token with read-only *Contents* access to this repository (it is private).
 Or download `{NAME}-linux.tar.gz`, then `tar xzf {NAME}-linux.tar.gz && cd {NAME}-{version} && sudo ./install.sh`.
 `sudo ./install.sh --help` lists the options (unattended install, automatic updates, uninstall).
 

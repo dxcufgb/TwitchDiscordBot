@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parent.parent
 from twitchbot import __version__  # noqa: E402
 
 CODE = {f"twitchbot/{p.name}" for p in (ROOT / "twitchbot").glob("*.py")}
-COMMON = CODE | {"Main.py", "requirements.txt", ".env.example", "README.md", "VERSION", "CHANGES.md"}
+COMMON = CODE | {"Main.py", "requirements.txt", ".env.example", "README.md", "LICENSE", "VERSION", "CHANGES.md"}
 
 
 def build(tmp_path, *extra, version=None):

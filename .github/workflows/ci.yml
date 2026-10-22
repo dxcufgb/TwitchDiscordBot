@@ -104,17 +104,21 @@ jobs:
           loose="$(sudo find /opt/twitchdiscordbot \( -path /opt/twitchdiscordbot/data -o -path /opt/twitchdiscordbot/logs \) \
             -prune -o ! -type l \( ! -user root -o -perm /022 \) -print)"
           if [ -n "$loose" ]; then echo "Not root-owned or writable by others: $loose"; exit 1; fi
-          # The upgrade keeps the auto-update choice and token; a check with a fake token fails without leaking it.
+          # The upgrade keeps the auto-update choice and token. GitHub rejects the fake token (401): the updater says
+          # so and goes on without it, never leaking it. Without a token the check succeeds once the repository is
+          # public (0 = up to date, 10 = newer release) and fails (1) while it is private.
           systemctl is-enabled twitchdiscordbot-update.timer
           sudo grep -q "ci_fake_update_token" /opt/twitchdiscordbot/updater/github-token
           out="$(sudo /opt/twitchdiscordbot/auto-update.sh --check 2>&1)" && code=0 || code=$?
           echo "$out (exit code $code)"
           if grep -q "ci_fake_update_token" <<<"$out"; then echo "token leaked into the output"; exit 1; fi
-          # The common installer options: --check-update exits 0 / 10 / other (a fake token is an error).
+          grep -q "GitHub rejected the token" <<<"$out"
+          # The common installer options: --check-update exits 0 / 10 / other.
           ./install.sh --help | grep -q -- "--check-update"
           out="$(sudo /opt/twitchdiscordbot/install.sh --check-update 2>&1)" && code=0 || code=$?
           echo "$out (exit code $code)"
-          test "$code" = 1
+          case "$code" in 0 | 1 | 10) ;; *) echo "unexpected exit code"; exit 1 ;; esac
+          grep -q "GitHub rejected the token" <<<"$out"
           if grep -q "ci_fake_update_token" <<<"$out"; then echo "token leaked into the output"; exit 1; fi
           sudo /opt/twitchdiscordbot/install.sh --disable-auto-update
           test ! -e /opt/twitchdiscordbot/updater
@@ -122,10 +126,21 @@ jobs:
           # Without a stored token, the one-liner's INSTALL_GITHUB_TOKEN is used for the check only, never stored.
           out="$(sudo INSTALL_GITHUB_TOKEN=ci_fake_install_token ./install.sh --check-update 2>&1)" && code=0 || code=$?
           echo "$out (exit code $code)"
-          test "$code" = 1
-          if grep -q "No GitHub token" <<<"$out"; then echo "the token from the environment was not used"; exit 1; fi
+          case "$code" in 0 | 1 | 10) ;; *) echo "unexpected exit code"; exit 1 ;; esac
+          grep -q "GitHub rejected the token" <<<"$out" || { echo "the token from the environment was not used"; exit 1; }
           if grep -q "ci_fake_install_token" <<<"$out"; then echo "token leaked into the output"; exit 1; fi
           test ! -e /opt/twitchdiscordbot/updater
+          # No token at all: the check runs anonymously (the repository is public).
+          out="$(sudo ./install.sh --check-update 2>&1)" && code=0 || code=$?
+          echo "$out (exit code $code)"
+          case "$code" in 0 | 1 | 10) ;; *) echo "unexpected exit code"; exit 1 ;; esac
+          if grep -qE "needs a GitHub token|rejected the token" <<<"$out"; then echo "the check wanted a token"; exit 1; fi
+          test ! -e /opt/twitchdiscordbot/updater
+          # --yes --enable-auto-update needs no token: the timer is on, no token file is written.
+          sudo ./install.sh --yes --enable-auto-update
+          systemctl is-enabled twitchdiscordbot-update.timer
+          test ! -e /opt/twitchdiscordbot/updater/github-token
+          sudo /opt/twitchdiscordbot/install.sh --disable-auto-update
           # --yes --enable-auto-update stores INSTALL_GITHUB_TOKEN as the updater token (root 600).
           sudo INSTALL_GITHUB_TOKEN=ci_fake_install_token ./install.sh --yes --enable-auto-update
           systemctl is-enabled twitchdiscordbot-update.timer
@@ -211,6 +226,15 @@ jobs:
           if (-not (Select-String -Quiet -Path "$dir\.env" -Pattern 'ci-fake-token')) { throw 'settings lost on upgrade' }
           if (-not (Get-ScheduledTask -TaskName 'TwitchDiscordBot Update' -ErrorAction SilentlyContinue)) { throw 'auto-update lost on upgrade' }
           if (-not (Test-Path "$dir\updater\github-token")) { throw 'update token lost on upgrade' }
+          # Automatic updates need no token (the repository is public): -Yes -EnableAutoUpdate without one works.
+          powershell -NoProfile -ExecutionPolicy Bypass -File "$dir\install.ps1" -DisableAutoUpdate
+          if (Test-Path "$dir\updater") { throw 'updater folder not removed' }
+          powershell -NoProfile -ExecutionPolicy Bypass -File "$dir\install.ps1" -Yes -EnableAutoUpdate
+          if ($LASTEXITCODE -ne 0) { throw "-EnableAutoUpdate without a token failed ($LASTEXITCODE)" }
+          if (-not (Get-ScheduledTask -TaskName 'TwitchDiscordBot Update' -ErrorAction SilentlyContinue)) { throw 'no update task without a token' }
+          if (Test-Path "$dir\updater\github-token") { throw 'a token file was written without a token' }
+          $updaterReaders = (Get-Acl "$dir\updater").Access.IdentityReference.Value
+          if ($updaterReaders -match 'Users|Everyone|LOCAL SERVICE') { throw 'updater folder must be Administrators/SYSTEM only' }
           powershell -NoProfile -ExecutionPolicy Bypass -File "$dir\install.ps1" -Uninstall -Purge
           if (Get-ScheduledTask -TaskName TwitchDiscordBot -ErrorAction SilentlyContinue) { throw 'task not removed' }
           if (Get-ScheduledTask -TaskName 'TwitchDiscordBot Update' -ErrorAction SilentlyContinue) { throw 'update task not removed' }

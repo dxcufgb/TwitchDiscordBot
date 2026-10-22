@@ -14,6 +14,9 @@
     "ROLLBACK FAILED", the backup is kept in <install folder>\updater\rollback-backup-<time> and the exit code is 1.
     Log: <install folder>\updater\update.log
 
+    No GitHub token is needed (the repository is public). An optional one is read from
+    <install folder>\updater\github-token (Administrators and SYSTEM only); it goes to api.github.com only.
+
 .PARAMETER Check  Only report whether a newer release exists.
 #>
 [CmdletBinding()]
@@ -55,8 +58,10 @@ function Get-ProgramItem {
 function Invoke-Updater([string[]]$Arguments) {
     # Isolated mode (-I): only the standard library and this script, nothing from the working directory.
     $updater = Join-Path $InstallDir 'twitchbot\updater.py'
-    $all = @('-I', $updater, '--install-dir', $InstallDir, '--token-file', $TokenFile, '--platform', 'windows',
-        '--log-file', $LogFile) + $Arguments
+    $all = @('-I', $updater, '--install-dir', $InstallDir)
+    # The token is optional (the repository is public): only pass the file when one is stored.
+    if (Test-Path $TokenFile) { $all += @('--token-file', $TokenFile) }
+    $all += @('--platform', 'windows', '--log-file', $LogFile) + $Arguments
     # Windows PowerShell 5.1 turns a native program's stderr into error records; with 'Stop' those would abort.
     $ErrorActionPreference = 'Continue'
     Push-Location $env:SystemRoot
@@ -213,13 +218,17 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
     Write-Host 'Error: please run as administrator.'
     exit 1
 }
-if (-not (Test-Path $TokenFile)) {
-    Write-Host "Error: no GitHub token in $TokenFile. Turn automatic updates on with: $InstallDir\install.cmd -EnableAutoUpdate"
-    exit 1
-}
 if (-not (Test-Path $VenvPy)) {
     Write-Host "Error: TwitchDiscordBot is not installed in $InstallDir."
     exit 1
+}
+# The updater folder holds the log and the lock (and an optional token): Administrators and SYSTEM only, as
+# install.ps1 sets it up. Created here only if missing (automatic updates turned on without a token).
+if (-not (Test-Path $UpdaterDir)) {
+    New-Item -ItemType Directory -Force -Path $UpdaterDir | Out-Null
+    $sidAdmins = '*S-1-5-32-544'; $sidSystem = '*S-1-5-18'
+    & icacls $UpdaterDir /inheritance:r /grant:r "${sidAdmins}:(OI)(CI)F" "${sidSystem}:(OI)(CI)F" /Q | Out-Null
+    if ($LASTEXITCODE -ne 0) { Write-Host "Error: could not restrict access to $UpdaterDir."; exit 1 }
 }
 
 # One run at a time: the lock file stays open (and exclusive) until this script ends.
